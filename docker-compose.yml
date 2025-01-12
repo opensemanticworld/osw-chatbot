@@ -1,0 +1,13 @@
+
+services:
+  osw-openai-api-wrapper:
+    image: opensemanticworld/osw-openai-api-wrapper
+    build:
+      context: ./
+    container_name: osw-openai-api-wrapper
+    restart: unless-stopped
+    volumes:
+      - ./src/osw_openai_api_wrapper:/app
+    env_file:
+      - .env
+

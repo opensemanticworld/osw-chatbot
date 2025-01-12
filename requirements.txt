@@ -1,0 +1,6 @@
+
+fastapi>=0.115.2
+requests>=2.32.3
+uvicorn>=0.31.1
+textract>=1.6.5
+duckduckgo_search>=6.3.3
