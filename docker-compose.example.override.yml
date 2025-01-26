@@ -1,0 +1,13 @@
+services:
+    osw-openai-api-wrapper:
+        networks:
+            - default
+            - caddy
+        labels:
+            caddy: ${API_SERVER}
+            caddy.reverse_proxy: "{{upstreams 80}}"
+
+networks:
+  # Add caddy as an external network.
+  caddy:
+    external: true
