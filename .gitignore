@@ -1,3 +1,6 @@
+.venv
 .env
 __pycache__
 docker-compose.override.yml
+*.log
+*_cache.db
