@@ -7,6 +7,14 @@ services:
             caddy: ${API_SERVER}
             caddy.reverse_proxy: "{{upstreams 80}}"
 
+    osw-chatbot:
+        networks:
+            - default
+            - caddy
+        labels:
+            caddy_2: ${UI_SERVER}
+            caddy_2.reverse_proxy: "{{upstreams 81}}"
+
 networks:
   # Add caddy as an external network.
   caddy:

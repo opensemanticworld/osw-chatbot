@@ -1,13 +1,24 @@
 
 services:
-  osw-openai-api-wrapper:
-    image: opensemanticworld/osw-openai-api-wrapper
+  osw-chatbot:
+    image: opensemanticworld/osw-chatbot
     build:
       context: ./
+    container_name: osw-chat
+    restart: unless-stopped
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    # options see https://panel.holoviz.org/how_to/server/commandline.html
+    command: ["panel", "serve", "src/osw_chatbot/main.py", "--address", "0.0.0.0", "--port", "81"]
+
+  osw-openai-api-wrapper:
+    image: opensemanticworld/osw-chatbot
     container_name: osw-openai-api-wrapper
     restart: unless-stopped
     volumes:
-      - ./src/osw_openai_api_wrapper:/app
+      - ./:/app
     env_file:
       - .env
-
+    command: ["uvicorn", "osw_chatbot.structured_output.api:app", "--host", "0.0.0.0", "--port", "80"]

@@ -10,9 +10,13 @@ COPY ./requirements.txt /app/requirements.txt
 RUN find /app -name "requirements.txt" -type f -exec pip install -r '{}' ';'
 
 # 
-COPY ./src/osw_openai_api_wrapper /app
+COPY ./ /app
+RUN pip install .
 
 # 
 #CMD ["uvicorn", "app.src:main_app", "--host", "0.0.0.0", "--port", "80"]
 #CMD [ "python3", "app/main.py" ]
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
+#CMD ["uvicorn", "osw_chatbot.structured_output.api:app", "--host", "0.0.0.0", "--port", "80"]
+#CMD ["python", "src/osw_chatbot/main.py"]
+# options see https://panel.holoviz.org/how_to/server/commandline.html
+#CMD ["panel", "serve", "src/osw_chatbot/main.py", "--address", "0.0.0.0", "--port", "81"]

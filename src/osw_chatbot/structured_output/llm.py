@@ -5,7 +5,7 @@ import json
 from pprint import pprint
 #from jsonref import replace_refs
 
-from util import modify_schema, data_url_to_text
+from osw_chatbot.structured_output.util import modify_schema, data_url_to_text
 
 def get_llm_response_azure_openai(promt, schema_dict = None, data_dict = None, files = None, web_search = False):
 

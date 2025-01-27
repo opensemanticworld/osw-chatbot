@@ -5,7 +5,7 @@ from typing import Optional, Union, List
 from fastapi.middleware.cors import CORSMiddleware
 
 import json
-from openai import get_llm_response_azure_openai
+from osw_chatbot.structured_output.llm import get_llm_response_azure_openai
 
 app = FastAPI()
 

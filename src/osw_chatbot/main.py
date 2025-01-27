@@ -50,6 +50,7 @@ chat_bot = pn.chat.ChatInterface(
 
 app = pn.Column(chat_bot, frontend)
 chat_bot.send("what's on your mind?", user="Assistant", respond=False)
-#chat_bot.servable()
+chat_bot.servable()
 
-pn.serve(app, port=52670 )
+if __name__ == "__main__":
+    pn.serve(app, port=52670 )
