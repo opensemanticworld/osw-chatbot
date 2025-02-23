@@ -19,4 +19,37 @@ https://github.com/user-attachments/assets/8f3857cd-4879-4591-9fd9-b3db0e641c7c
 https://github.com/user-attachments/assets/8760397a-3089-4758-b480-d2cee9463234
 > AI assisted form-completion based on a uploaded data sheet
 
+## Run
+```bash
+git clone https://github.com/opensemanticworld/osw-chatbot 
+cd osw-chatbot
+cp .env.example .env
+```
 
+adapt `.env` then run
+
+```bash
+docker compose up osw-chatbot
+```
+
+or
+
+```bash
+docker compose up osw-openai-api-wrapper
+```
+
+## Development
+
+### Chatbot App
+
+modify and run
+`src/osw_chatbot/main.py`
+
+for integration into OpenSemanticLab see [Extension:Chatbot](https://github.com/opensemanticworld/mediawiki-extensions-Chatbot)
+
+### Structured Output API Wrapper
+
+modify and run
+`src/osw_chatbot/structured_output/api.py`
+
+for integration into OpenSemanticLab see [Extension:MwJson](https://github.com/opensemanticlab/mediawiki-extensions-MwJson)
