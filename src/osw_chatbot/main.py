@@ -28,29 +28,30 @@ async def get_response(contents, user, instance):
     print(response)
     return response["output"]#["answer"]
 
-chat_bot = pn.chat.ChatInterface(
-    callback=get_response,
-    #max_height=500,
-    #max_width=300,
-    show_send=True,
-    show_rerun=False,
-    show_undo=False,
-    show_clear=True,
-    show_avatar=True,
-    show_timestamp=False,
-    show_button_name=False,
-    show_reaction_icons=False,
-    sizing_mode="stretch_width",
-    callback_exception="verbose",
-    # stylesheets = [
-    #     """
-    #     """
-    # ],
-)
+def build_app():
+    chat_bot = pn.chat.ChatInterface(
+        callback=get_response,
+        #max_height=500,
+        #max_width=300,
+        show_send=True,
+        show_rerun=False,
+        show_undo=False,
+        show_clear=True,
+        show_avatar=True,
+        show_timestamp=False,
+        show_button_name=False,
+        show_reaction_icons=False,
+        sizing_mode="stretch_width",
+        callback_exception="verbose",
+        # stylesheets = [
+        #     """
+        #     """
+        # ],
+    )
 
-app = pn.Column(chat_bot, frontend)
-chat_bot.send("what's on your mind?", user="Assistant", respond=False)
-app.servable()
+    app = pn.Column(chat_bot, frontend)
+    chat_bot.send("what's on your mind?", user="Assistant", respond=False)
+    return app
 
 if __name__ == "__main__":
-    pn.serve(app, port=52670 )
+    pn.serve(build_app, port=52670)
