@@ -40,6 +40,14 @@ docker compose up osw-openai-api-wrapper
 
 ## Development
 
+```bash
+git clone https://github.com/opensemanticworld/osw-chatbot 
+cd osw-chatbot
+cp .env.example .env
+pip install -e .[dev]
+playwright install-deps && playwright install
+```
+
 ### Chatbot App
 
 modify and run

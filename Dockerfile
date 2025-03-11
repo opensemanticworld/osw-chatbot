@@ -12,6 +12,7 @@ RUN find /app -name "requirements.txt" -type f -exec pip install -r '{}' ';'
 # 
 COPY ./ /app
 RUN pip install .
+RUN playwright install-deps && playwright install
 
 # 
 #CMD ["uvicorn", "app.src:main_app", "--host", "0.0.0.0", "--port", "80"]

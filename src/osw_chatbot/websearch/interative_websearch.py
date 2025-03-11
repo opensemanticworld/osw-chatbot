@@ -1,6 +1,6 @@
 
 # a function to search the web via startpage.com and return the results
-from calendar import c
+import os
 import token
 from typing import List, Optional
 from click import Option
@@ -23,6 +23,8 @@ vector_store = InMemoryVectorStore(embeddings)
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 
+# read HEADLESS from env, default to True
+headless = os.getenv('HEADLESS', 'true').lower() in ('true', '1')
 
 class WebSearchParam(BaseModel):
     query: str
@@ -93,10 +95,11 @@ async def web_search(param: WebSearchParam) -> WebSearchResult:
     async with async_playwright() as playwright:
         chromium = playwright.chromium # or "firefox" or "webkit".
         browser = await chromium.launch(
-            headless=False, # otherwise bot detection will be triggered
+            headless=headless, # otherwise bot detection will be triggered
         )
-        #user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-        #browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
+        if headless:
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+            browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
         page = await browser.new_page()
         await page.goto(url)
         await page.wait_for_load_state("networkidle")
@@ -160,10 +163,11 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
     async with async_playwright() as playwright:
         chromium = playwright.chromium # or "firefox" or "webkit".
         browser = await chromium.launch(
-            headless=False, # otherwise bot detection will be triggered
+            headless=headless, # otherwise bot detection will be triggered
         )
-        #user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-        #browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
+        if headless:
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+            browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
         page = await browser.new_page()
         await page.goto(param.url)
         await page.wait_for_load_state("networkidle")
