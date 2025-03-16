@@ -21,6 +21,9 @@ vector_store = InMemoryVectorStore(embeddings)
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 
+from crawl4ai import AsyncWebCrawler
+from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig
+
 # read HEADLESS from env, default to True
 headless = os.getenv('HEADLESS', 'true').lower() in ('true', '1')
 
@@ -150,6 +153,46 @@ async def browse_web_page_tool(param: BrowseWebPageParam) -> BrowseWebPageResult
 cache = {}
 if not "buffer" in cache: cache["buffer"] = ""
 
+class SimpleBrowseWebPageParam(BaseModel):
+    url: str
+    """The URL of the web page to browse."""
+    
+class SimpleBrowseWebPageResult(BaseModel):
+    text: str
+    """The text content of the web page."""
+
+
+async def simple_browse_web_page(param: SimpleBrowseWebPageParam) -> SimpleBrowseWebPageResult:
+    
+    # download word, pdf, excel, ppt, etc. files
+    if param.url.split(".")[-1] in ["doc", "docx", "pdf", "xls", "xlsx", "ppt", "pptx"]:
+        text = file_url_to_text(param.url)
+        return SimpleBrowseWebPageResult(text=text)
+    
+    browser_config = BrowserConfig(headless=True, accept_downloads=False)#,browser_type="firefox")  # Default browser configuration
+    run_config = CrawlerRunConfig()   # Default crawl run configuration
+
+    result = SimpleBrowseWebPageResult(text="")
+    try:
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            result = await crawler.arun(
+                url=param.url,
+                config=run_config
+            )
+            #print(result.markdown)  # Print clean markdown content
+            
+            if result.success:
+                if result.downloaded_files:
+                    for file_path in result.downloaded_files:
+                        print("Downloaded:", file_path)
+                if result.markdown:
+                    result = SimpleBrowseWebPageResult(text=result.markdown.markdown_with_citations)
+    except Exception as e:
+        text = file_url_to_text(param.url)
+        SimpleBrowseWebPageResult(text=text)
+    return result
+        
+    
 async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
     """Loads the given web page and returns the text content and links.
     Links can be followed to learn more about specific topics.
@@ -241,6 +284,12 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
 
     return result
 
+@langchain_core.tools.tool
+async def simple_browse_web_page_tool(param: SimpleBrowseWebPageParam) -> SimpleBrowseWebPageResult:
+    """Loads the given web page and returns the text content and links.
+    Links can be followed to learn more about specific topics.
+    """
+    return await simple_browse_web_page(param)
 
 #buffer = ""
 
@@ -258,7 +307,7 @@ async def store_intermediate_result(text: str):
     
     cache["buffer"] = cache["buffer"] + text
 
-tools = [web_search_tool, browse_web_page_tool, store_intermediate_result_tool]
+tools = [web_search_tool, simple_browse_web_page_tool]#, store_intermediate_result_tool]
 
 prompt = ChatPromptTemplate.from_messages(
     [

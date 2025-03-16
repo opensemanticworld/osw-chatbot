@@ -4,6 +4,7 @@ uvicorn>=0.31.1
 textract-py3>=2.1.0
 duckduckgo_search>=6.3.3
 playwright
+crawl4ai
 
 langchain-core
 langchain-openai
