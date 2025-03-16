@@ -1,16 +1,12 @@
 
 # a function to search the web via startpage.com and return the results
 import os
-import token
 from typing import List, Optional
-from click import Option
 import langchain_core
 from pydantic import BaseModel
-import regex
-import requests
+import asyncio
 
 import langchain_core.tools
-from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 
 import langchain_core
 
@@ -93,7 +89,7 @@ async def web_search(param: WebSearchParam) -> WebSearchResult:
     # use playwright to extract the data
     from playwright.async_api import async_playwright, Playwright
     async with async_playwright() as playwright:
-        chromium = playwright.chromium # or "firefox" or "webkit".
+        chromium = playwright.chromium # "chromium" or "firefox" or "webkit".
         browser = await chromium.launch(
             headless=headless, # otherwise bot detection will be triggered
         )
@@ -102,7 +98,10 @@ async def web_search(param: WebSearchParam) -> WebSearchResult:
             browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
         page = await browser.new_page()
         await page.goto(url)
-        await page.wait_for_load_state("networkidle")
+        try:
+            await page.wait_for_load_state("networkidle")
+        except:
+            pass
         # # save the page to a file
         # with open("page.html", "w", encoding="utf-8") as f:
         #     f.write(await page.content())
@@ -159,39 +158,48 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
     
     if param.url in cache:
         result = cache[param.url]
-    from playwright.async_api import async_playwright, Playwright
-    async with async_playwright() as playwright:
-        chromium = playwright.chromium # or "firefox" or "webkit".
-        browser = await chromium.launch(
-            headless=headless, # otherwise bot detection will be triggered
-        )
-        if headless:
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-            browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
-        page = await browser.new_page()
-        await page.goto(param.url)
-        await page.wait_for_load_state("networkidle")
-        # # save the page to a file
-        # with open("page.html", "w", encoding="utf-8") as f:
-        #     f.write(await page.content())
-        # # save the page text to a file
-        # with open("page.txt", "w", encoding="utf-8") as f:
-        #     f.write(await (await page.query_selector("body")).text_content())
-        text = await (await page.query_selector("body")).text_content()
-        links = []
-        for element in await page.query_selector_all("a"):
-            try:
-                url = await element.get_attribute("href")
-                # if the url is relative, make it absolute
-                if not url.startswith("http"):
-                    url = await page.evaluate('document.location.origin') + url
-                title = await element.text_content()
-                links.append(WebLink(url=url, title=title, description=""))
-            except:
+    else:
+        from playwright.async_api import async_playwright, Playwright
+        async with async_playwright() as playwright:
+            chromium = playwright.chromium # or "firefox" or "webkit".
+            browser = await chromium.launch(
+                headless=headless, # otherwise bot detection will be triggered
+            )
+            if headless:
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+                browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
+            page = await browser.new_page()
+            await page.goto(param.url)
+            # parse html page
+            if param.url.endswith(".pdf"):
                 pass
-        
-        result = BrowseWebPageResult(text=text, links=links)
-        cache[param.url] = result
+                
+            else:    
+                try:
+                    await page.wait_for_load_state("networkidle")
+                except:
+                    pass
+                # # save the page to a file
+                # with open("page.html", "w", encoding="utf-8") as f:
+                #     f.write(await page.content())
+                # # save the page text to a file
+                # with open("page.txt", "w", encoding="utf-8") as f:
+                #     f.write(await (await page.query_selector("body")).text_content())
+                text = await (await page.query_selector("body")).text_content()
+                links = []
+                for element in await page.query_selector_all("a"):
+                    try:
+                        url = await element.get_attribute("href")
+                        # if the url is relative, make it absolute
+                        if not url.startswith("http"):
+                            url = await page.evaluate('document.location.origin') + url
+                        title = await element.text_content()
+                        links.append(WebLink(url=url, title=title, description=""))
+                    except:
+                        pass
+            
+                result = BrowseWebPageResult(text=text, links=links)
+                cache[param.url] = result
         
     # if if total token length of text is larger than 4096, reduce the text and links  
     # split the text into chunks of 4096 tokens
@@ -207,7 +215,7 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
     link_chunk = 0
     link_chunks = [[]]
     link_json =""
-    for link in links:
+    for link in result.links:
         link: WebLink
         link_json += link.json()
         chunks = text_splitter.split_text(link_json)
@@ -270,19 +278,23 @@ prompt = ChatPromptTemplate.from_messages(
 # Construct the Tools agent
 agent = create_tool_calling_agent(llm, tools, prompt)
 # Create an agent executor by passing in the agent and tools
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, max_iterations=None)
 #agent_executor.invoke({"input": "what is LangChain?"})
 
 from langchain_core.messages import AIMessage, HumanMessage
 chat_history = []
 
 async def invoke(prompt):
-    res = await agent_executor.ainvoke({"input": prompt, "chat_history": chat_history})
-    chat_history.extend([
-        HumanMessage(content=prompt),
-        AIMessage(content=res["output"]),
-    ])
-    res["output"] += cache["buffer"]
+    res = {}
+    try:
+        res = await agent_executor.ainvoke({"input": prompt, "chat_history": chat_history})
+        chat_history.extend([
+            HumanMessage(content=prompt),
+            AIMessage(content=res["output"]),
+        ])
+        res["output"] += cache["buffer"]
+    except Exception as e:
+        res["output"] = "An error occured. Details: " + str(e)
     return res
 
 def test():
@@ -293,7 +305,7 @@ def test():
     
 
 def test_tools():
-    import asyncio
+    
     results = asyncio.run(web_search(WebSearchParam(query="filtech exhibitor-list", max_results=1)))
     for res in results:
         print(res.url)
