@@ -14,6 +14,8 @@ from osw_chatbot.llm import llm, embeddings
 
 from langchain_core.vectorstores import InMemoryVectorStore
 
+from osw_chatbot.structured_output.util import file_url_to_text
+
 vector_store = InMemoryVectorStore(embeddings)
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -158,48 +160,49 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
     
     if param.url in cache:
         result = cache[param.url]
+    # todo: use content type to decide if the page is a file or a web page
+    elif param.url.split(".")[-1] in ["doc", "docx", "pdf", "xls", "xlsx", "ppt", "pptx"]:
+        text = file_url_to_text(param.url)
+        result = BrowseWebPageResult(text=text, links=[])
+        cache[param.url] = result
     else:
         from playwright.async_api import async_playwright, Playwright
         async with async_playwright() as playwright:
             chromium = playwright.chromium # or "firefox" or "webkit".
             browser = await chromium.launch(
-                headless=headless, # otherwise bot detection will be triggered
+                headless=headless,
             )
             if headless:
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0" # otherwise bot detection will be triggered
                 browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
             page = await browser.new_page()
             await page.goto(param.url)
             # parse html page
-            if param.url.endswith(".pdf"):
+            try:
+                await page.wait_for_load_state("networkidle")
+            except:
                 pass
-                
-            else:    
+            # # save the page to a file
+            # with open("page.html", "w", encoding="utf-8") as f:
+            #     f.write(await page.content())
+            # # save the page text to a file
+            # with open("page.txt", "w", encoding="utf-8") as f:
+            #     f.write(await (await page.query_selector("body")).text_content())
+            text = await (await page.query_selector("body")).text_content()
+            links = []
+            for element in await page.query_selector_all("a"):
                 try:
-                    await page.wait_for_load_state("networkidle")
+                    url = await element.get_attribute("href")
+                    # if the url is relative, make it absolute
+                    if not url.startswith("http"):
+                        url = await page.evaluate('document.location.origin') + url
+                    title = await element.text_content()
+                    links.append(WebLink(url=url, title=title, description=""))
                 except:
                     pass
-                # # save the page to a file
-                # with open("page.html", "w", encoding="utf-8") as f:
-                #     f.write(await page.content())
-                # # save the page text to a file
-                # with open("page.txt", "w", encoding="utf-8") as f:
-                #     f.write(await (await page.query_selector("body")).text_content())
-                text = await (await page.query_selector("body")).text_content()
-                links = []
-                for element in await page.query_selector_all("a"):
-                    try:
-                        url = await element.get_attribute("href")
-                        # if the url is relative, make it absolute
-                        if not url.startswith("http"):
-                            url = await page.evaluate('document.location.origin') + url
-                        title = await element.text_content()
-                        links.append(WebLink(url=url, title=title, description=""))
-                    except:
-                        pass
-            
-                result = BrowseWebPageResult(text=text, links=links)
-                cache[param.url] = result
+        
+            result = BrowseWebPageResult(text=text, links=links)
+            cache[param.url] = result
         
     # if if total token length of text is larger than 4096, reduce the text and links  
     # split the text into chunks of 4096 tokens
@@ -320,9 +323,15 @@ def test_tools():
             print(link.title)
             print(link.description)
         print("===")
-        
+  
+def test_pdf_download():
+    result = asyncio.run(browse_web_page(BrowseWebPageParam(url="https://de.wikipedia.org/wiki/Wikipedia:Hauptseite")))
+    print(result)
+    result = asyncio.run(browse_web_page(BrowseWebPageParam(url="https://wiki.creativecommons.org/images/6/61/Creativecommons-licensing-and-marking-your-content_eng.pdf")))
+    print(result)
+          
 if __name__ == "__main__":
     #test_tools()
-    test()
-
+    #test()
+    test_pdf_download()
     

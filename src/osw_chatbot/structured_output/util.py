@@ -157,3 +157,16 @@ def data_url_to_text(file_name, data_url):
     
         result = extracted_text.decode('utf-8')
     return result
+
+def file_url_to_text(file_url) -> str:
+    import requests
+    response = requests.get(file_url)
+    file_name = file_url.split("/")[-1]
+    result = ""
+    with tempfile.NamedTemporaryFile(delete=False, suffix="." + file_name.split(".")[-1]) as temp_file:
+        with temp_file.file as file:
+            file.write(response.content)
+        temp_file_path = temp_file.name
+        extracted_text = process(temp_file_path)
+        result = extracted_text.decode('utf-8')
+    return result
