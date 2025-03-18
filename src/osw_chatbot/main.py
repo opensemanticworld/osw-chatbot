@@ -19,7 +19,7 @@ pn.config.theme = 'dark'
 
 
 #frontend = ChatFrontendWidget()
-from osw_chatbot.toolcalling.agent import frontend, plot_panel
+from osw_chatbot.toolcalling.agent import plot_tool_panel
      
 async def get_response(contents, user, instance):
     print(contents)
@@ -49,7 +49,7 @@ def build_app():
         # ],
     )
 
-    app = pn.Row(chat_bot, frontend, plot_panel)
+    app = pn.Row(chat_bot, plot_tool_panel)
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
     return app
 

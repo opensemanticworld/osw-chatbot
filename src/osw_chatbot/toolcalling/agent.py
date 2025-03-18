@@ -11,6 +11,9 @@ from pydantic.v1 import BaseModel
 from typing import Tuple
 import panel as pn
 import matplotlib.pyplot as plt
+import pandas as pd
+from pathlib import Path
+DATA_PATH_DEFAULT = env_path = Path(__file__).parent.parent.parent.parent / "data"
 
 import langchain_core
 
@@ -23,24 +26,77 @@ vector_store = InMemoryVectorStore(embeddings)
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 
-frontend =  ChatFrontendWidget()
+class PlotToolPanel():
+    """a panel with callback functions to be called by a tool agent"""
+    def __init__(self, data_path = None):
+        if data_path is None:
+            self.data_path = DATA_PATH_DEFAULT
+        else:
+            self.data_path = Path(data_path)
 
+        self.fig, self.ax = plt.subplots()
+        self.build_panel()
 
-fig, ax = plt.subplots()
-plot_panel = pn.pane.Matplotlib(fig)
+    def build_panel(self):
+        self.frontend = ChatFrontendWidget()
+        self.plot_panel = pn.pane.Matplotlib(self.fig)
+        self._panel = pn.Row(self.plot_panel)
+        return pn.Row(self.plot_panel, self.frontend)
 
+    def load_data_from_csv(self) -> List[str]:
+        """
+        a function that loads data from a csv file
+        returns the column names"""
+        self.df = pd.read_csv(self.data_path / "test.csv", delimiter = "\t")
+        return self.df.columns
+
+    def plot_data(self, x_column_name: str, y_column_name: str) -> str:
+        """
+         a function that plots the data.
+         returns "success" if the plot was successful, else the error message
+        """
+        print("bin am Anfang von plot_data")
+        try:
+            print(self.df)
+            x = self.df[x_column_name]
+            y = self.df[y_column_name]
+            print(x,y)
+            fig, ax = plt.subplots()
+            ax.plot(x, y)
+            self.plot_panel.object = fig
+            print("habe geplottet")
+            response = "success"
+        except Exception as e:
+            response = str(e)
+        return response
+
+    def __panel__(self):
+        return self._panel
+
+    def generate_langchain_tools(self)->List[langchain_core.tools.tool]:
+        """
+        returns a list of langchain tools that can be called by the agent
+        """
+        return [langchain_core.tools.tool(self.plot_data),
+                langchain_core.tools.tool(self.load_data_from_csv)]
+
+plot_tool_panel = PlotToolPanel()
+plot_tools = plot_tool_panel.generate_langchain_tools()
+print("plot_tools", plot_tools)
 
 async def call_client_side_tool(toolcall):
     id = random.randint(0, 1000)
     toolcall["id"] = id
-    frontend.function_call = json.loads(json.dumps(toolcall))
+    plot_tool_panel.frontend.function_call = json.loads(json.dumps(toolcall))
     i = 0
     while i < 10: 
         print("waiting for response")
         await asyncio.sleep(1)
-        print(frontend.function_called)
-        if frontend.function_called is not None and "id" in frontend.function_called and frontend.function_called["id"] == toolcall["id"]:
-            return frontend.function_called["result"]
+        print(plot_tool_panel.frontend.function_called)
+        if (plot_tool_panel.frontend.function_called is not None and "id" in plot_tool_panel.frontend.function_called
+                and
+                plot_tool_panel.frontend.function_called["id"] == toolcall["id"]):
+            return plot_tool_panel.frontend.function_called["result"]
         i = i + 1
     print("timeout!")
     return None
@@ -75,22 +131,7 @@ async def create_category_instance(category_page) -> str:
 
 
 
-@langchain_core.tools.tool
-async def plot_test() -> Tuple[np.ndarray, np.ndarray]:
-    """a plot funciton for testing
-    returns a tuple of two lists x and y
-    """
-    x = np.linspace(0,10,100)
-    y = np.sin(x)
-
-    fig, ax = plt.subplots()
-    ax.plot(x, y)
-    plot_panel.object = fig
-    print("habe geplottet")
-    response = (x,y)
-    return response
-
-tools = [multiply, redirect, find_page_from_topic, create_category_instance, plot_test]
+tools = [multiply, redirect, find_page_from_topic, create_category_instance, *plot_tools]
 
 prompt = ChatPromptTemplate.from_messages(
     [
