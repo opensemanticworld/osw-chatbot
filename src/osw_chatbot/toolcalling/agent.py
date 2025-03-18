@@ -1,13 +1,16 @@
 from typing import Dict, List
 import asyncio
 import json
+import numpy as np
 
 import random
 
 import langchain_core.tools
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
-
-
+from pydantic.v1 import BaseModel
+from typing import Tuple
+import panel as pn
+import matplotlib.pyplot as plt
 
 import langchain_core
 
@@ -20,7 +23,12 @@ vector_store = InMemoryVectorStore(embeddings)
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 
-frontend = ChatFrontendWidget()
+frontend =  ChatFrontendWidget()
+
+
+fig, ax = plt.subplots()
+plot_panel = pn.pane.Matplotlib(fig)
+
 
 async def call_client_side_tool(toolcall):
     id = random.randint(0, 1000)
@@ -65,7 +73,24 @@ async def create_category_instance(category_page) -> str:
     response = await call_client_side_tool({"type": "function_call", "name": "create_category_instance", "args": [category_page]})
     return response
 
-tools = [multiply, redirect, find_page_from_topic, create_category_instance]
+
+
+@langchain_core.tools.tool
+async def plot_test() -> Tuple[np.ndarray, np.ndarray]:
+    """a plot funciton for testing
+    returns a tuple of two lists x and y
+    """
+    x = np.linspace(0,10,100)
+    y = np.sin(x)
+
+    fig, ax = plt.subplots()
+    ax.plot(x, y)
+    plot_panel.object = fig
+    print("habe geplottet")
+    response = (x,y)
+    return response
+
+tools = [multiply, redirect, find_page_from_topic, create_category_instance, plot_test]
 
 prompt = ChatPromptTemplate.from_messages(
     [
