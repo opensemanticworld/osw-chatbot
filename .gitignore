@@ -4,3 +4,4 @@ __pycache__
 docker-compose.override.yml
 *.log
 *_cache.db
+osw_chatbot.egg-info

@@ -11,24 +11,32 @@ env_loaded = load_dotenv(env_path, verbose=True)
 if not env_loaded:
     print(f"No .env file found at {env_path}, using environment variables.")
 
-from osw_chatbot.toolcalling.agent import invoke
+from osw_chatbot.toolcalling.agent import OswFrontendPanel, PlotToolPanel, HistoryToolAgent
 
 pn.extension()
 
 pn.config.theme = 'dark'
 
 
-#frontend = ChatFrontendWidget()
-from osw_chatbot.toolcalling.agent import plot_tool_panel
-     
-async def get_response(contents, user, instance):
-    print(contents)
-    #frontend.function_call = json.loads(json.dumps({"name": "get_response", "args": [contents]}))
-    response = await invoke(contents)
-    print(response)
-    return response["output"]#["answer"]
 
 def build_app():
+    plot_tool_panel = PlotToolPanel()
+    frontend_panel = OswFrontendPanel(child_panels=[plot_tool_panel])
+
+    tools = [
+        *plot_tool_panel.generate_langchain_tools(),
+        *frontend_panel.generate_langchain_tools()
+    ]
+
+    agent = HistoryToolAgent(tools=tools)
+
+    async def get_response(contents, user, instance):
+        print(contents)
+        # frontend.function_call = json.loads(json.dumps({"name": "get_response", "args": [contents]}))
+        response = await agent.invoke(contents)
+        print(response)
+        return response["output"]  # ["answer"]
+
     chat_bot = pn.chat.ChatInterface(
         callback=get_response,
         #max_height=500,
@@ -49,7 +57,7 @@ def build_app():
         # ],
     )
 
-    app = pn.Row(chat_bot, plot_tool_panel)
+    app = pn.Row(chat_bot, frontend_panel)
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
     return app
 
