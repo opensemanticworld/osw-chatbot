@@ -13,6 +13,7 @@ from langchain_community.cache import SQLiteCache
 from langchain_community.storage import SQLStore
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import LanguageModelLike
+from langchain_graphrag.indexing import IndexerArtifacts
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_openai import (
     AzureChatOpenAI,
@@ -20,8 +21,6 @@ from langchain_openai import (
     ChatOpenAI,
     OpenAIEmbeddings,
 )
-
-from langchain_graphrag.indexing import IndexerArtifacts
 
 _LOGGER = logging.getLogger("main:common")
 
@@ -62,10 +61,10 @@ def check_if_necessary_azure_env_set():
     azure_envs = [
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_API_KEY",
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_ENDPOINT",
-        #"LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_DEPLOYMENT",
+        # "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_DEPLOYMENT",
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_API_KEY",
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_ENDPOINT",
-        #"LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_DEPLOYMENT",
+        # "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_DEPLOYMENT",
     ]
 
     check_required_envs(azure_envs)
@@ -83,7 +82,9 @@ def check_if_necessary_openai_env_set():
 def trace_via_langsmith():
     check_required_envs(["LANGCHAIN_API_KEY"])
 
-    assert os.getenv("LANGCHAIN_API_KEY") is not None, "Required LANGCHAIN_API_KEY"
+    assert os.getenv("LANGCHAIN_API_KEY") is not None, (
+        "Required LANGCHAIN_API_KEY"
+    )
 
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
     os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
@@ -114,10 +115,12 @@ def make_llm_instance(
             model=model,
             api_version="2024-05-01-preview",
             api_key=os.getenv("LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_API_KEY"),
-            azure_endpoint=os.getenv("LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_ENDPOINT"),
-            #azure_deployment=os.getenv(
+            azure_endpoint=os.getenv(
+                "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_ENDPOINT"
+            ),
+            # azure_deployment=os.getenv(
             #    "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_DEPLOYMENT"
-            #),
+            # ),
             cache=SQLiteCache(str(cache_dir / "azure_openai_cache.db")),
             temperature=temperature,
             top_p=top_p,
@@ -140,7 +143,9 @@ def make_llm_instance(
 
         return OllamaLLM(
             model=model,
-            cache=SQLiteCache(str(cache_dir / f"ollama-{model.replace(':','-')}.db")),
+            cache=SQLiteCache(
+                str(cache_dir / f"ollama-{model.replace(':', '-')}.db")
+            ),
             temperature=temperature,
             top_p=top_p,
             num_ctx=ollama_num_context,
@@ -169,7 +174,9 @@ def make_embedding_instance(
             model=model,
             api_version="2024-02-15-preview",
             api_key=os.getenv("LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_API_KEY"),
-            azure_endpoint=os.getenv("LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_ENDPOINT"),
+            azure_endpoint=os.getenv(
+                "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_ENDPOINT"
+            ),
             # azure_deployment=os.getenv(
             #     "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_DEPLOYMENT"
             # ),
@@ -192,7 +199,9 @@ def save_artifacts(artifacts: IndexerArtifacts, path: Path):
     artifacts.entities.to_parquet(path / "entities.parquet")
     artifacts.relationships.to_parquet(path / "relationships.parquet")
     artifacts.text_units.to_parquet(path / "text_units.parquet")
-    artifacts.communities_reports.to_parquet(path / "communities_reports.parquet")
+    artifacts.communities_reports.to_parquet(
+        path / "communities_reports.parquet"
+    )
     print("Artifacts stored at", path)
     if artifacts.merged_graph is not None:
         with path.joinpath("merged-graph.pickle").open("wb") as fp:
@@ -244,4 +253,4 @@ def load_artifacts(path: Path) -> IndexerArtifacts:
 
 
 def get_artifacts_dir_name(model: str) -> str:
-    return f"artifacts-{model.replace(':','-')}"
+    return f"artifacts-{model.replace(':', '-')}"

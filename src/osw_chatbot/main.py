@@ -1,22 +1,14 @@
-
-from pathlib import Path
-from dotenv import load_dotenv
 import panel as pn
 
-# going to do load_dotenv() here
-# as OLLAMA_HOST needs to be in the environment
-# before the imports below
-env_path = Path(__file__).parent.parent.parent / ".env"
-env_loaded = load_dotenv(env_path, verbose=True)
-if not env_loaded:
-    print(f"No .env file found at {env_path}, using environment variables.")
-
-from osw_chatbot.toolcalling.agent import OswFrontendPanel, PlotToolPanel, HistoryToolAgent
+from osw_chatbot.toolcalling.agent import (
+    HistoryToolAgent,
+    OswFrontendPanel,
+    PlotToolPanel,
+)
 
 pn.extension()
 
-pn.config.theme = 'dark'
-
+pn.config.theme = "dark"
 
 
 def build_app():
@@ -25,22 +17,22 @@ def build_app():
 
     tools = [
         *plot_tool_panel.generate_langchain_tools(),
-        *frontend_panel.generate_langchain_tools()
+        *frontend_panel.generate_langchain_tools(),
     ]
 
     agent = HistoryToolAgent(tools=tools)
 
     async def get_response(contents, user, instance):
         print(contents)
-        # frontend.function_call = json.loads(json.dumps({"name": "get_response", "args": [contents]}))
+        # frontend.function_call = json.loads(json.dumps({"name": "get_response", "args": [contents]})) # noqa
         response = await agent.invoke(contents)
         print(response)
         return response["output"]  # ["answer"]
 
     chat_bot = pn.chat.ChatInterface(
         callback=get_response,
-        #max_height=500,
-        #max_width=300,
+        # max_height=500,
+        # max_width=300,
         show_send=True,
         show_rerun=False,
         show_undo=False,
@@ -60,6 +52,7 @@ def build_app():
     app = pn.Row(chat_bot, frontend_panel)
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
     return app
+
 
 if __name__ == "__main__":
     pn.serve(build_app, port=52670)

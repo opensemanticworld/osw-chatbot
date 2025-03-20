@@ -4,27 +4,11 @@
 import logging
 import os
 from pathlib import Path
-from threading import local
 from typing import cast
-
-import tableprint
-import typer
-from dotenv import load_dotenv
-from typer import Typer
 
 _LOGGER = logging.getLogger("main:query")
 
-from osw_chatbot.graphrag.common import (
-    EmbeddingModelType,
-    LLMType,
-    get_artifacts_dir_name,
-    load_artifacts,
-    make_embedding_instance,
-    make_llm_instance,
-    trace_via_langsmith,
-)
 from langchain_chroma.vectorstores import Chroma as ChromaVectorStore
-
 from langchain_graphrag.query.global_search import GlobalSearch
 from langchain_graphrag.query.global_search.community_weight_calculator import (
     CommunityWeightCalculator,
@@ -53,29 +37,43 @@ from langchain_graphrag.query.local_search.context_selectors import (
 from langchain_graphrag.types.graphs.community import CommunityLevel
 from langchain_graphrag.utils import TiktokenCounter
 
-#app = Typer()
+from osw_chatbot.graphrag.common import (
+    EmbeddingModelType,
+    LLMType,
+    get_artifacts_dir_name,
+    load_artifacts,
+    make_embedding_instance,
+    make_llm_instance,
+    trace_via_langsmith,
+)
+
+# app = Typer()
 
 
-#@app.command()
+# @app.command()
 def global_search(
-    output_dir: Path = Path("temp"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    cache_dir: Path = Path("temp", "cache"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    llm_type: LLMType = LLMType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    llm_model: str = "gpt-4o-2024-08-06", # = typer.Option(..., case_sensitive=False),
-    query: str = 22, # = typer.Option(...),
-    level: int = 2, # = typer.Option(2, help="Community level to search"),
-    ollama_num_context: int = None, # = typer.Option(None, help="Context window size for ollama model"),
-    show_references: bool = True, # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
-    repeat_instructions: bool = True, # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
-    output_raw: bool = False, # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
-    enable_langsmith: bool = False, # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
+    output_dir: Path = Path(
+        "temp"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    cache_dir: Path = Path(
+        "temp", "cache"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    llm_type: LLMType = LLMType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    llm_model: str = "gpt-4o-2024-08-06",  # = typer.Option(..., case_sensitive=False),
+    query: str = 22,  # = typer.Option(...),
+    level: int = 2,  # = typer.Option(2, help="Community level to search"),
+    ollama_num_context: int = None,  # = typer.Option(None, help="Context window size for ollama model"),
+    show_references: bool = True,  # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
+    repeat_instructions: bool = True,  # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
+    output_raw: bool = False,  # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
+    enable_langsmith: bool = False,  # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
 ):
     if enable_langsmith:
         trace_via_langsmith()
 
     artifacts_dir = output_dir / get_artifacts_dir_name(llm_model)
 
-    #tableprint.table(
+    # tableprint.table(
     print(
         [
             ["LangSmith", str(enable_langsmith)],
@@ -88,7 +86,9 @@ def global_search(
             ["OLLAMA_HOST", os.getenv("OLLAMA_HOST")],
             [
                 "Ollama Num Context",
-                "Not Provided" if ollama_num_context is None else ollama_num_context,
+                "Not Provided"
+                if ollama_num_context is None
+                else ollama_num_context,
             ],
             ["Show References", str(show_references)],
             ["Repeat Instructions In Prompt", str(repeat_instructions)],
@@ -113,7 +113,8 @@ def global_search(
             ollama_num_context=ollama_num_context,
         ),
         prompt_builder=KeyPointsGeneratorPromptBuilder(
-            show_references=show_references, repeat_instructions=repeat_instructions
+            show_references=show_references,
+            repeat_instructions=repeat_instructions,
         ),
         context_builder=report_context_builder,
     )
@@ -146,21 +147,25 @@ def global_search(
         print(chunk, end="", flush=True)
 
 
-#@app.command()
+# @app.command()
 def local_search(
-    output_dir: Path = Path("temp"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    cache_dir: Path = Path("temp", "cache"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    llm_type: LLMType = LLMType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    llm_model: str = "gpt-4o-2024-08-06", # = typer.Option(..., case_sensitive=False),
-    #query: str = 22, # = typer.Option(...),
-    level: int = 2, # = typer.Option(2, help="Community level to search"),
-    embedding_type: EmbeddingModelType = EmbeddingModelType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    embedding_model: str = "text-embedding-ada-002-2", # = typer.Option(..., case_sensitive=False),
-    ollama_num_context: int = None, # = typer.Option(None, help="Context window size for ollama model"),
-    show_references: bool = True, # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
-    repeat_instructions: bool = True, # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
-    output_raw: bool = False, # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
-    enable_langsmith: bool = False, # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003    
+    output_dir: Path = Path(
+        "temp"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    cache_dir: Path = Path(
+        "temp", "cache"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    llm_type: LLMType = LLMType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    llm_model: str = "gpt-4o-2024-08-06",  # = typer.Option(..., case_sensitive=False),
+    # query: str = 22, # = typer.Option(...),
+    level: int = 2,  # = typer.Option(2, help="Community level to search"),
+    embedding_type: EmbeddingModelType = EmbeddingModelType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    embedding_model: str = "text-embedding-ada-002-2",  # = typer.Option(..., case_sensitive=False),
+    ollama_num_context: int = None,  # = typer.Option(None, help="Context window size for ollama model"),
+    show_references: bool = True,  # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
+    repeat_instructions: bool = True,  # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
+    output_raw: bool = False,  # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
+    enable_langsmith: bool = False,  # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
 ):
     if enable_langsmith:
         trace_via_langsmith()
@@ -168,7 +173,7 @@ def local_search(
     vector_store_dir = output_dir / "vector_stores"
     artifacts_dir = output_dir / get_artifacts_dir_name(llm_model)
 
-    #tableprint.table(
+    # tableprint.table(
     print(
         [
             ["LangSmith", str(enable_langsmith)],
@@ -177,14 +182,16 @@ def local_search(
             ["artifacts_dir", str(artifacts_dir)],
             ["llm_type", llm_type],
             ["llm_model", llm_model],
-            #["query", query],
+            # ["query", query],
             ["level", level],
             ["embedding_type", embedding_type],
             ["embedding_model", embedding_model],
             ["OLLAMA_HOST", os.getenv("OLLAMA_HOST")],
             [
                 "Ollama Num Context",
-                "Not Provided" if ollama_num_context is None else ollama_num_context,
+                "Not Provided"
+                if ollama_num_context is None
+                else ollama_num_context,
             ],
             ["Show References", str(show_references)],
             ["Repeat Instructions In Prompt", str(repeat_instructions)],
@@ -195,7 +202,9 @@ def local_search(
     # Reload the vector Store that stores
     # the entity name & description embeddings
     entities_collection_name = f"entity-{embedding_model}"
-    _LOGGER.info("[Vector Store] Entities Collection - %s", entities_collection_name)
+    _LOGGER.info(
+        "[Vector Store] Entities Collection - %s", entities_collection_name
+    )
     entities_vector_store = ChromaVectorStore(
         collection_name=entities_collection_name,
         persist_directory=str(vector_store_dir),
@@ -259,6 +268,5 @@ def local_search(
     # print(search_chain.invoke(query, config={"tags": ["local-search"]}))
 
     # or, you could stream
-    #for chunk in search_chain.stream(query, config={"tags": ["local-search"]}):
+    # for chunk in search_chain.stream(query, config={"tags": ["local-search"]}):
     #    print(chunk, end="", flush=True)
-
