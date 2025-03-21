@@ -12,12 +12,11 @@ if not env_loaded:
     print(f"No .env file found at {env_path}, using environment variables.")
 
 from osw_chatbot.toolcalling.agent import OswFrontendPanel, PlotToolPanel, HistoryToolAgent
+import osw_chatbot.toolcalling.osw_tools as osw_tools
 
 pn.extension()
 
 pn.config.theme = 'dark'
-
-
 
 def build_app():
     plot_tool_panel = PlotToolPanel()
@@ -25,7 +24,13 @@ def build_app():
 
     tools = [
         *plot_tool_panel.generate_langchain_tools(),
-        *frontend_panel.generate_langchain_tools()
+        *frontend_panel.generate_langchain_tools(),
+        osw_tools.download_osl_file,
+        osw_tools.get_instances,
+        osw_tools.sparql_search_function,
+        osw_tools.get_topic_taxonomy,
+        osw_tools.get_website_html,
+        osw_tools.get_file_header,
     ]
 
     agent = HistoryToolAgent(tools=tools)
