@@ -12,6 +12,7 @@ from urllib.request import urlopen
 from SPARQLWrapper import SPARQLWrapper, JSON
 import os
 from uuid import UUID
+import re
 import pandas as pd
 
 
@@ -66,30 +67,74 @@ class SparqlSearchFunctionInput(BaseModel):
                                description="The search string to look for. All words inside the search string must be contained in the normalized label.")
 
 
+
+def check_for_uuid(input_str):
+    pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    return re.match(pattern, input_str, re.IGNORECASE) is not None
+
+def try_cast_str_to_uuid(input_str):
+    if check_for_uuid(input_str):
+        return input_str
+    if "osw" in input_str.lower():
+        str_uuid = input_str[-32:]  # Get the last 32 characters
+        uuid = ""
+        uuid += str_uuid[0:8] + "-"
+        uuid += str_uuid[8:12] + "-"
+        uuid += str_uuid[12:16] + "-"
+        uuid += str_uuid[16:20] + "-"
+        uuid += str_uuid[20:32]
+        return uuid
+    return None
+
 @tool
 def sparql_search_function(inp: SparqlSearchFunctionInput):
     """Search for a string in the Mat-O-Lab OSW."""
+
     sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
+    ## check if an osw-id is contained in the search string, then directly use it
+    search_string_uuid = try_cast_str_to_uuid(inp.search_string)
+    if search_string_uuid is not None:
+        ## directly search for elements with found uuid:
+        sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
+        PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
+        PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
+        PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
+        PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
 
-    ## generate filter string:
-    filter_string = ""
-    for spl in inp.search_string.replace("-", "").split(" "):
-        filter_string += "FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE(\"" + spl + "\")))\n"
-    sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-PREFIX owl: <http://www.w3.org/2002/07/owl#>
-PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+        SELECT DISTINCT ?node ?label ?labeltext ?osw_id ?uuid
+        WHERE {
+          ?node Property:HasUuid ?uuid .
+          ?node Property:HasNormalizedLabel ?label .
+          ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext.
+          
+          ?node Property:HasOswId ?osw_id.
+          FILTER(?uuid = \"""" + search_string_uuid + """\")
+        }"""
 
-SELECT DISTINCT ?node ?label ?labeltext ?osw_id
-WHERE {
-  ?node Property:HasNormalizedLabel ?label .
-  ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext
-         """ + filter_string + """
-         ?node Property:HasOswId ?osw_id
-}"""
+    else:
+
+
+        ## generate filter string:
+        filter_string = ""
+        for spl in inp.search_string.replace("-", "").split(" "):
+            filter_string += "FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE(\"" + spl + "\")))\n"
+        sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    PREFIX owl: <http://www.w3.org/2002/07/owl#>
+    PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
+    PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
+    PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
+    PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
+    PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+    
+    SELECT DISTINCT ?node ?label ?labeltext ?osw_id
+    WHERE {
+      ?node Property:HasNormalizedLabel ?label .
+      ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext
+             """ + filter_string + """
+             ?node Property:HasOswId ?osw_id
+    }"""
 
     sparql = SPARQLWrapper(sparql_url)
     sparql.setHTTPAuth('BASIC')
@@ -108,7 +153,9 @@ class FindOutEverythingAboutInput(BaseModel):
 
 @tool
 def find_out_everything_about(inp: FindOutEverythingAboutInput):
-    """Get all properties of an OSW element."""
+    """Get all properties of an OSW element. This can be used to further explore the element and find out more about it.
+    returns the result of a sparql query going through all properties of the given element in a star shape in the
+    given depth"""
     # print(inp)
     # print(inp.osw_id)
 
@@ -144,7 +191,7 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
             }
         } """
 
-    # print(sparql_query)
+    print(sparql_query)
     sparql = SPARQLWrapper(sparql_url)
     sparql.setHTTPAuth('BASIC')
     sparql.setCredentials(os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD"))
@@ -196,7 +243,7 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
 
         } """
 
-    # print(sparql_query)
+    print(sparql_query)
     sparql = SPARQLWrapper(sparql_url)
     sparql.setHTTPAuth('BASIC')
     sparql.setCredentials(os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD"))
@@ -277,3 +324,4 @@ def get_website_html(inp:GetWebsiteHtmlInput):
     html_bytes = page.read()
     html = html_bytes.decode("utf-8")
     return html
+

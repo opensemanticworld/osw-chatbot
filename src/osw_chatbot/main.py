@@ -13,6 +13,7 @@ if not env_loaded:
 
 from osw_chatbot.toolcalling.agent import OswFrontendPanel, PlotToolPanel, HistoryToolAgent
 import osw_chatbot.toolcalling.osw_tools as osw_tools
+from osw_chatbot.panels.terminal_mirror_panel import TerminalMirrorPanel
 
 pn.extension()
 
@@ -29,6 +30,7 @@ def build_app():
         osw_tools.get_instances,
         osw_tools.sparql_search_function,
         osw_tools.get_topic_taxonomy,
+        osw_tools.find_out_everything_about,
         osw_tools.get_website_html,
         osw_tools.get_file_header,
     ]
@@ -61,8 +63,9 @@ def build_app():
         #     """
         # ],
     )
-
-    app = pn.Row(chat_bot, frontend_panel)
+    terminal_mirror = TerminalMirrorPanel()
+    visualization_column = pn.Column( frontend_panel, terminal_mirror)
+    app = pn.Row(chat_bot, visualization_column)
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
     return app
 
