@@ -1,9 +1,9 @@
 import panel as pn
 
 from osw_chatbot.toolcalling.agent import (
-    HistoryToolAgent,
+    HistoryToolAgent,  # PlotToolPanel,
     OswFrontendPanel,
-    PlotToolPanel,
+    SandboxPlotPanel,
 )
 
 pn.extension()
@@ -12,12 +12,15 @@ pn.config.theme = "dark"
 
 
 def build_app():
-    plot_tool_panel = PlotToolPanel()
-    frontend_panel = OswFrontendPanel(child_panels=[plot_tool_panel])
+    # plot_tool_panel = PlotToolPanel()
+    # frontend_panel = OswFrontendPanel(child_panels=[plot_tool_panel])
+    sandbox_plot_panel = SandboxPlotPanel()
+    frontend_panel = OswFrontendPanel(child_panels=[sandbox_plot_panel])
 
     tools = [
-        *plot_tool_panel.generate_langchain_tools(),
+        # *plot_tool_panel.generate_langchain_tools(),
         *frontend_panel.generate_langchain_tools(),
+        *sandbox_plot_panel.generate_langchain_tools(),
     ]
 
     agent = HistoryToolAgent(tools=tools)

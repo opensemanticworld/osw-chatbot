@@ -1,8 +1,9 @@
 import asyncio
 import json
 import random
+from base64 import b64decode
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import langchain_core
 import langchain_core.tools
@@ -15,13 +16,16 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.vectorstores import InMemoryVectorStore
+from llm_sandbox import SandboxSession
 
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from osw_chatbot.llm import EMBEDDINGS, LLM
 
-DATA_PATH_DEFAULT = env_path = (
-    Path(__file__).parent.parent.parent.parent / "data"
-)
+# Path setup
+ROOT_DIR_PATH = Path(__file__).parents[3]
+DOCKERFILE_SANDBOX_PATH = ROOT_DIR_PATH / "Dockerfile.sandbox"
+DATA_PATH_DEFAULT = ROOT_DIR_PATH / "data"
+
 vector_store = InMemoryVectorStore(EMBEDDINGS)
 
 
@@ -116,6 +120,64 @@ class OswFrontendPanel:
         ]
 
 
+class SandboxPlotPanel:
+    """A tool to plot data by running code in sandbox environment"""
+
+    def __init__(self, data_path=None):
+        """Initializes the plot panel with a data path."""
+        if data_path is None:
+            self.data_path = DATA_PATH_DEFAULT
+        else:
+            self.data_path = Path(data_path)
+        self.build_panel()
+
+    def build_panel(self):
+        """Build the panel."""
+        self.image_panel = pn.pane.PNG()
+        self._panel = self.image_panel
+
+    def __panel__(self):
+        return self._panel
+
+    def generate_langchain_tools(self) -> List[langchain_core.tools.tool]:
+        """
+        returns a list of langchain tools that can be called by the agent
+        """
+        return [
+            langchain_core.tools.tool(self.run_code),
+        ]
+
+    def run_code(
+        self,
+        lang: str,
+        code: str,
+        libraries: Optional[list] = None,
+    ) -> str:
+        """
+        Run code in a sandboxed environment.
+        :param lang: The language of the code.
+        :param code: The code to run.
+        :param libraries: The libraries to use, it is optional.
+        :return: base64 encoded image of the plot.
+        """
+
+        with SandboxSession(
+            # lang="python",
+            lang=lang,
+            libraries=libraries,
+            dockerfile=DOCKERFILE_SANDBOX_PATH,
+            keep_template=True,
+        ) as session:
+            # Run the code in the sandbox
+            try:
+                image_base64_str = session.run(code, libraries).text
+                image_bytes = b64decode(image_base64_str)
+                self.image_panel.object = image_bytes
+                return "Image saved as base64 string"
+            except Exception as e:
+                return str(e)
+
+
 class PlotToolPanel:
     """a panel with callback functions to be called by a tool agent"""
 
@@ -196,7 +258,7 @@ class HistoryToolAgent:
 
         # Construct the Tools agent
         self.langchain_agent = create_tool_calling_agent(
-            LLM, tools, self.prompt_template
+            llm=LLM, tools=tools, prompt=self.prompt_template
         )
         # Create an agent executor by passing in the agent and tools
         self.agent_executor = AgentExecutor(
