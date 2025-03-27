@@ -7,14 +7,28 @@ dotenv.load_dotenv()
 from langchain.tools import tool
 
 from pydantic.v1 import BaseModel, Field
-from osw.express import osw_download_file
+from osw.express import osw_download_file, OswExpress
 from urllib.request import urlopen
 from SPARQLWrapper import SPARQLWrapper, JSON
 import os
 from uuid import UUID
 import re
 import pandas as pd
+osw = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
 
+class GetPageHtmlInput(BaseModel):
+    fullpagetitle: str = Field(..., description="The title of the page to get the html from including the namespace. "
+                                                "Example: Item:OSW70b4d6464c1d44a887eb86e3b39b8751")
+
+@tool
+def get_page_html(inp:GetPageHtmlInput):
+    """Get the html content of a page from the main slot. This schould contain most of the information the user would see
+     on this page (exceot for contend rendered with javascript)"""
+    json_with_html = osw.site._site.raw_api(
+        action="parse",
+        page=inp.fullpagetitle,
+        format="json")
+    return(json_with_html)
 
 class DownlaodOslFileInput(BaseModel):
     osw_id: str = Field(..., description="The id of the OSW element to download the file from. Can start with File: "
@@ -48,6 +62,64 @@ def download_osl_file(inp: DownlaodOslFileInput):
     except Exception as e:
         return "could not download file, excpetion " + str(e)
 
+# class GetShortestPathInput(BaseModel):
+#     start_node: str = Field(..., description="The start node of the path")
+#     end_node: str = Field(..., description="The end node of the path")
+#
+# @tool
+# def get_shortest_path(inp: GetShortestPathInput):
+#     """Get the shortest path between two nodes in a graph"""
+#     print("shortest path")
+#
+
+## Sparql query that gets all unidirectional paths between two nodes
+"""PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX owl: <http://www.w3.org/2002/07/owl#>
+        PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
+        PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
+        PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
+        PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
+        PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+
+        SELECT DISTINCT #?node1 
+						#?node2 
+                        #?label1
+                        #?label2 
+                        #?uuid1 
+                        #?uuid2 
+                        ?labeltext1 
+                        ?labeltext2 
+                        #?p 
+						?p_label
+						#?x 
+						?x_label	
+						#?y 
+						?y_label
+						
+        WHERE {
+          
+          ?node1 (<>|!<>)* ?x .
+          ?x ?p ?y .
+          ?y (<>|!<>)* ?node2 .
+          ?node1 Property:HasUuid ?uuid1 .
+          ?node2 Property:HasUuid ?uuid2 .
+          ?node1 Property:HasNormalizedLabel ?label1 .
+          ?node2 Property:HasNormalizedLabel ?label2 .
+          ?p Property:HasName ?p_label .
+          ?x Property:HasName ?x_label .
+          ?y Property:HasName ?y_label .
+          
+          ?label1 <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext1.
+          ?label2 <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext2.
+          
+          FILTER(?uuid1 = "a5fd64a4-e26e-4b7d-abdb-b8c0db83ddd6")  # Matthias Albert Popp
+          #FILTER(?uuid1 = "b3a52473-87d0-4385-95e7-ecdda1f6b1af")  # Robin Pfeiffer
+          
+          FILTER(?uuid2 = "4240d9f1-cbe6-45bd-b932-0868584f7071") # Item
+   #       FILTER(?uuid2 = "82ee4dd0-696b-4fc5-9afd-643ea6f7c10c") # Rene Wickmann
+		  FILTER(?p != 	<http://semantic-mediawiki.org/swivt/1.0#masterPage>)
+          FILTER(?p != 	<https://mat-o-lab.open-semantic-lab.org/id/Property-3AHas_query>)
+          }"""
 
 class GetFileHeaderInput(BaseModel):
     file_path: str = Field(description="The path to the file to get the header from.")
@@ -147,7 +219,9 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
 
 
 class FindOutEverythingAboutInput(BaseModel):
-    osw_id: str = Field(..., description="The id of the OSW element to find out everything about.")
+    osw_id: str = Field(..., description="The id of the OSW element to find out everything about, for example for "
+                                         "example File:OSW29b9f7873b6f4752beafc4cc57b65db2 ",
+                                    regex=".*OSW[0-9a-f]{32}.*")
     depth: int = Field(1, description="The depth of the search. Default is 1.")
 
 
@@ -161,7 +235,7 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
 
     sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
 
-    osw_id = inp.osw_id.split(":")[-1].split('.')[0]  ## second split: get rid of file ending
+    osw_id = inp.osw_id.split(":")[-1].split('.')[0]  ## second split: get rid of file ending e.g. .csv
     my_uuid = str(UUID(osw_id.replace("OSW", "")))
     sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
