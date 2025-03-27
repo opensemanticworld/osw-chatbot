@@ -1,5 +1,7 @@
 .venv
 .env
+.idea
+build
 __pycache__
 docker-compose.override.yml
 *.log
@@ -7,3 +9,5 @@ docker-compose.override.yml
 osw_chatbot.egg-info
 osw_files
 accounts.pwd.yaml
+# Automatically added by osw.auth.CredentialManager.save_credentials_to_file:
+*/Snippets/osw_files/*
