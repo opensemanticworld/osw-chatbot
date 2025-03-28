@@ -11,12 +11,13 @@ import uuid
 from osw.core import OSW, model
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from pydantic.v1 import BaseModel, Field
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+from base64 import b64decode
 import panel as pn
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
-DATA_PATH_DEFAULT = env_path = Path(__file__).parent.parent.parent.parent / "data"
+
 import io
 from datetime import datetime
 
@@ -29,7 +30,7 @@ from osw.express import osw_upload_file, OswExpress
 import langchain_core
 
 from panel.io.mime_render import exec_with_return
-
+from llm_sandbox import SandboxSession
 from llm import llm, embeddings
 
 from langchain_core.vectorstores import InMemoryVectorStore
@@ -38,6 +39,8 @@ vector_store = InMemoryVectorStore(embeddings)
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
+
+DATA_PATH_DEFAULT = env_path = Path(__file__).parent.parent.parent.parent / "data"
 
 class OswFrontendPanel():
     """the class that will be handed over to OSW"""
@@ -142,6 +145,16 @@ def read_local_csv_to_df(file_path: str):
     """
     df = pd.read_csv(file_path)
 
+class PlotByCodeInput(BaseModel):
+    lang: str = Field(default="python", description="The language code of the page.")
+    code: str = Field(..., description="The code to run. The code must save a figure as .png into a io.BytesIO object "
+                                       "and convert it to a base64 encoded string. Print this string to console ("
+                                       "but nothing else).")
+    csv_path: Optional[str] = Field(default=None, description="The path to a .csv file that can be used within the "
+                                                             "script. The path from within the script must be "
+                                                              "'/sandbox/<FILENAME from the csv_path>'.")
+    libraries: Optional[List[str]] = Field(default=None, description="The libraries to use.")
+
 class PlotToolPanel():
     """a panel with callback functions to be called by a tool agent"""
     def __init__(self, data_path = None):
@@ -155,7 +168,9 @@ class PlotToolPanel():
 
     def build_panel(self):
 
-        self.plot_panel = pn.pane.Matplotlib(self.fig, width = 600)
+      #  self.matplotlib_panel = pn.pane.Matplotlib(self.fig, width = 600)
+        self.image_panel = pn.pane.Image(self.fig, width = 600)
+        self.plot_panel = pn.Row(self.image_panel)
         self._panel = self.plot_panel
 
     def load_data_from_csv(self, inp:LoadDataFromCsvInput) -> List[str]:
@@ -165,29 +180,73 @@ class PlotToolPanel():
         self.df = pd.read_csv(inp.file_path, delimiter = inp.delimiter, skiprows=inp.skip_rows)
         return self.df.columns
 
-    def plot_data(self, plot_config: PlotConfig) -> str:
+
+    # def plot_data(self, plot_config: PlotConfig) -> str:
+    #     """
+    #      returns "success" if the plot was successful, else the error message
+    #     """
+    #
+    #     try:
+    #         print(self.df)
+    #         x = self.df[plot_config.x_column_name]
+    #         y = self.df[plot_config.y_column_name]
+    #
+    #         fig, ax = plt.subplots()
+    #         ax.plot(x, y)
+    #
+    #         if plot_config.x_label is not None:
+    #             ax.set_xlabel(plot_config.x_label)
+    #         if plot_config.y_label is not None:
+    #             ax.set_ylabel(plot_config.y_label)
+    #
+    #         self.matplotlib_panel.object = fig
+    #         self.plot_panel.clear()
+    #         self.plot_panel.append(self.matplotlib_panel)
+    #         response = "success"
+    #     except Exception as e:
+    #         response = str(e)
+    #     return response
+
+    def plot_by_code(
+        self, inp: PlotByCodeInput
+
+    ) -> str:
         """
-         returns "success" if the plot was successful, else the error message
+        Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the csv_path parameter.
         """
 
-        try:
-            print(self.df)
-            x = self.df[plot_config.x_column_name]
-            y = self.df[plot_config.y_column_name]
+        with SandboxSession(
+            # lang="python",
+            lang=inp.lang,
+            libraries=inp.libraries,
+            image="python:3.12-slim",
+            # dockerfile=DOCKERFILE_SANDBOX_PATH,
+            verbose=True,
+            keep_template=True,
+        ) as session:
+            # Run the code in the sandbox
+            try:
+                if True:#inp.csv_path is not None:
+                    print("copying file to sandbox")
+                    filename = Path(inp.csv_path).name
+                    dest_filepath = "/sandbox/" + filename
+                    session.copy_to_runtime(src = inp.csv_path,
+                                            dest = dest_filepath,)
+                    session.execute_command(command="ls -l /sandbox")
+                image_base64_str = session.run(inp.code, inp.libraries).text
+                code_path = DATA_PATH_DEFAULT / "code.py"
+                session.copy_from_runtime(src="/tmp/code.py", dest = str(code_path))
 
-            fig, ax = plt.subplots()
-            ax.plot(x, y)
+                ### check if the base64 string encodes an image:
+                print("image_base64_str", image_base64_str)
+                image_bytes = b64decode(image_base64_str, validate = True)
 
-            if plot_config.x_label is not None:
-                ax.set_xlabel(plot_config.x_label)
-            if plot_config.y_label is not None:
-                ax.set_ylabel(plot_config.y_label)
-
-            self.plot_panel.object = fig
-            response = "success"
-        except Exception as e:
-            response = str(e)
-        return response
+                self.image_panel.object = image_bytes
+                self.plot_panel.clear()
+                self.plot_panel.append(self.image_panel)
+                return "Image saved as base64 string"
+            except Exception as e:
+                return("the script did not return a base64 encoded image, instead it returned: " + str(e))
 
 
     def attach_current_plot_to_osw_page(self, inp: AttachCurrentPlotToOswPageInput):
@@ -232,9 +291,10 @@ class PlotToolPanel():
         """
 
 
-        return [langchain_core.tools.tool(self.plot_data),
+        return [#langchain_core.tools.tool(self.plot_data),
                 langchain_core.tools.tool(self.load_data_from_csv),
                 langchain_core.tools.tool(self.attach_current_plot_to_osw_page),
+                langchain_core.tools.tool(self.plot_by_code),
                 ]
 
 

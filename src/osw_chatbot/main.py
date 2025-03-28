@@ -34,7 +34,6 @@ def build_app():
         osw_tools.find_out_everything_about,
         osw_tools.get_website_html,
         osw_tools.get_file_header,
-
     ]
 
     agent = HistoryToolAgent(tools=tools)
@@ -66,8 +65,8 @@ def build_app():
         # ],
     )
     terminal_mirror = TerminalMirrorPanel()
-    visualization_column = pn.Column( frontend_panel, terminal_mirror)
-    app = pn.Row(chat_bot, frontend_panel)#, visualization_column)
+    visualization_column = pn.Column( plot_tool_panel, terminal_mirror)
+    app = pn.Row(chat_bot, frontend_panel, visualization_column)
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
     return app
 
