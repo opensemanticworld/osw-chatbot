@@ -153,20 +153,22 @@ class PlotByCodeInput(BaseModel):
     code: str = Field(..., description="The code to run. The code must save a figure as .png into a io.BytesIO object "
                                        "and convert it to a base64 encoded string. Print this string to console ("
                                        "but nothing else).")
-    csv_path: Optional[str] = Field(default=None, description="The path to a .csv file that can be used within the "
-                                                             "script. The path from within the script must be "
-                                                              "'/sandbox/<FILENAME from the csv_path>'. If used, "
-                                                              "think of opening the file before writing code to know "
-                                                              "how to read it in e.g. which are the correct delimiters ")
-    libraries: Optional[List[str]] = Field(default=None, description="The libraries to use.")
+    file_path: Optional[str] = Field(default=None, description="The path to a file that can be used within the "
+                                                              "script. The path from within the script must be "
+                                                              "'/sandbox/<FILENAME>' where <FILENAME> can be "
+                                                               "extracted from from the <file_path>")
+    libraries: Optional[List[str]] = Field(default=["numpy", "pandas", "matplotlib", "scipy"], description=("The "
+                                                                                                           "libraries to use. Only change if more than default is needed."))
 
 class RunCodeInput(BaseModel):
     lang: str = Field(default="python", description="The language code of the page.")
     code: str = Field(..., description="The code to run. Whatever is printed will be returned.")
     file_path: Optional[str] = Field(default=None, description="The path to a file that can be used within the "
                                                               "script. The path from within the script must be "
-                                                              "'/sandbox/<FILENAME from the file_path>' ")
-    libraries: Optional[List[str]] = Field(default=None, description="The libraries to use.")
+                                                              "'/sandbox/<FILENAME>' where <FILENAME> can be "
+                                                               "extracted from from the <file_path>")
+    libraries: Optional[List[str]] = Field(default=["numpy", "pandas", "matplotlib", "scipy"], description="The "
+                                                                                                           "libraries to use. Only change if more than default is needed.")
     file_type: Optional[str] = Field(default=None, description="The type of the file to use from filepath.")
 
 class PlotToolPanel():
@@ -226,7 +228,7 @@ class PlotToolPanel():
 
     ) -> str:
         """
-        Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the csv_path parameter.
+        Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the file_path parameter.
         """
 
         with SandboxSession(
@@ -240,10 +242,10 @@ class PlotToolPanel():
         ) as session:
             # Run the code in the sandbox
             try:
-                if True:#inp.csv_path is not None:
-                    filename = Path(inp.csv_path).name
+                if True:#inp.file_path is not None:
+                    filename = Path(inp.file_path).name
                     dest_filepath = "/sandbox/" + filename
-                    session.copy_to_runtime(src = inp.csv_path,
+                    session.copy_to_runtime(src = inp.file_path,
                                             dest = dest_filepath,)
                 image_base64_str = session.run(inp.code, inp.libraries).text
                 print("len(image_base64_str)", len(image_base64_str))
@@ -282,7 +284,7 @@ class PlotToolPanel():
         ) as session:
             # Run the code in the sandbox
             try:
-                if True:#inp.csv_path is not None:
+                if True:#inp.file_path is not None:
                     filename = Path(inp.file_path).name
                     dest_filepath = "/sandbox/" + filename
                     session.copy_to_runtime(src = inp.file_path,
