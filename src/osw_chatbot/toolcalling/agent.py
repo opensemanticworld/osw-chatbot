@@ -17,6 +17,7 @@ import panel as pn
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
+from PIL import Image
 
 import io
 from datetime import datetime
@@ -134,6 +135,8 @@ class LoadDataFromCsvInput(BaseModel):
     delimiter: str = Field(default="\t", description="The delimiter of the csv file.")
     skip_rows: int = Field(default=0, description="The number of lines to skip at the beginning of the file.")
 
+
+
 class AttachCurrentPlotToOswPageInput(BaseModel):
     osw_id: str = Field(..., description="Fullpagetitle of the page to attach the plot to. It has to be formatted like "
                                          "<NAMESPACE>:<OSW_ID> for example 'Item:OSW0b80ad413e954c87ac48bcc6ed784276' or 'Category:OSW0b80ad413e954c87ac48bcc6ed784276'.")
@@ -152,8 +155,19 @@ class PlotByCodeInput(BaseModel):
                                        "but nothing else).")
     csv_path: Optional[str] = Field(default=None, description="The path to a .csv file that can be used within the "
                                                              "script. The path from within the script must be "
-                                                              "'/sandbox/<FILENAME from the csv_path>'.")
+                                                              "'/sandbox/<FILENAME from the csv_path>'. If used, "
+                                                              "think of opening the file before writing code to know "
+                                                              "how to read it in e.g. which are the correct delimiters ")
     libraries: Optional[List[str]] = Field(default=None, description="The libraries to use.")
+
+class RunCodeInput(BaseModel):
+    lang: str = Field(default="python", description="The language code of the page.")
+    code: str = Field(..., description="The code to run. Whatever is printed will be returned.")
+    file_path: Optional[str] = Field(default=None, description="The path to a file that can be used within the "
+                                                              "script. The path from within the script must be "
+                                                              "'/sandbox/<FILENAME from the file_path>' ")
+    libraries: Optional[List[str]] = Field(default=None, description="The libraries to use.")
+    file_type: Optional[str] = Field(default=None, description="The type of the file to use from filepath.")
 
 class PlotToolPanel():
     """a panel with callback functions to be called by a tool agent"""
@@ -221,32 +235,66 @@ class PlotToolPanel():
             libraries=inp.libraries,
             image="python:3.12-slim",
             # dockerfile=DOCKERFILE_SANDBOX_PATH,
-            verbose=True,
+            #verbose=True,
             keep_template=True,
         ) as session:
             # Run the code in the sandbox
             try:
                 if True:#inp.csv_path is not None:
-                    print("copying file to sandbox")
                     filename = Path(inp.csv_path).name
                     dest_filepath = "/sandbox/" + filename
                     session.copy_to_runtime(src = inp.csv_path,
                                             dest = dest_filepath,)
-                    session.execute_command(command="ls -l /sandbox")
                 image_base64_str = session.run(inp.code, inp.libraries).text
-                code_path = DATA_PATH_DEFAULT / "code.py"
+                print("len(image_base64_str)", len(image_base64_str))
+                code_path = DATA_PATH_DEFAULT / "plot_codes" /"code.py"
                 session.copy_from_runtime(src="/tmp/code.py", dest = str(code_path))
 
                 ### check if the base64 string encodes an image:
-                print("image_base64_str", image_base64_str)
-                image_bytes = b64decode(image_base64_str, validate = True)
+                image_bytes = b64decode(image_base64_str)
+                Image.open(io.BytesIO(image_bytes))# open the image to check if the file is correct.
 
                 self.image_panel.object = image_bytes
                 self.plot_panel.clear()
                 self.plot_panel.append(self.image_panel)
-                return "Image saved as base64 string"
+                return "Image successfully plotted"
             except Exception as e:
-                return("the script did not return a base64 encoded image, instead it returned: " + str(e))
+                return("the script did not return a base64 encoded image, instead it returned: " + str(e),
+                       "\ the string above is from the except case.")
+
+    def run_code(
+        self, inp: RunCodeInput
+
+    ) -> str:
+        """
+        Run code in a sandboxed environment. Typacilly used to create text from code. Return whatever has been
+        printed to the console within the python code.
+        """
+
+        with SandboxSession(
+            # lang="python",
+            lang=inp.lang,
+            libraries=inp.libraries,
+            image="python:3.12-slim",
+            # dockerfile=DOCKERFILE_SANDBOX_PATH,
+            #verbose=True,
+            keep_template=True,
+        ) as session:
+            # Run the code in the sandbox
+            try:
+                if True:#inp.csv_path is not None:
+                    filename = Path(inp.file_path).name
+                    dest_filepath = "/sandbox/" + filename
+                    session.copy_to_runtime(src = inp.file_path,
+                                            dest = dest_filepath,)
+                return_str = session.run(inp.code, inp.libraries).text
+                print("len(image_base64_str)", len(return_str))
+                code_path = DATA_PATH_DEFAULT / "run_codes" /"code.py"
+                session.copy_from_runtime(src="/tmp/code.py", dest = str(code_path))
+
+                return return_str
+            except Exception as e:
+                return(str(e))
 
 
     def attach_current_plot_to_osw_page(self, inp: AttachCurrentPlotToOswPageInput):
@@ -295,6 +343,7 @@ class PlotToolPanel():
                 langchain_core.tools.tool(self.load_data_from_csv),
                 langchain_core.tools.tool(self.attach_current_plot_to_osw_page),
                 langchain_core.tools.tool(self.plot_by_code),
+                langchain_core.tools.tool(self.run_code),
                 ]
 
 
