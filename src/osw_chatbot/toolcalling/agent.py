@@ -310,9 +310,16 @@ class PlotToolPanel():
             entity = osw_obj.load_entity(title)
             if entity is None:
                 return "error loading entity with title: " + title + " was it formatted correctly?"
+
             ## save plot to bytesio object:
-            bytesio = io.BytesIO()
-            self.plot_panel.object.savefig(bytesio, format="png")
+            if self.plot_panel[0] == self.image_panel:
+                bytesio = io.BytesIO(self.image_panel.object)
+
+            elif self.plot_panel[0] == self.matplotlib_panel:
+                bytesio = io.BytesIO()
+                self.matplotlib_panel.object.savefig(bytesio, format="png")
+            else:
+                return "no plot to attach"
             plot_uuid = uuid.uuid4()
             wf = WikiFileController(uuid=str(plot_uuid), osw=osw_obj,
                                     title="OSW" + str(plot_uuid).replace("-", "") + ".png",
@@ -394,9 +401,7 @@ class HistoryToolAgent():
         print ("Useful parts of result: ", res["intermediate_steps"])
         self.chat_history.extend([
             HumanMessage(content=prompt),
-            str(res["intermediate_steps"]),
+            str(res["intermediate_steps"]),  ## TODO: find proper Type for intermediate steps
             AIMessage(content=res["output"]),
         ])
         return res
-
-
