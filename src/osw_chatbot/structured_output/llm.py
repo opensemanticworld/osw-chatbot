@@ -18,15 +18,11 @@ def get_llm_response_azure_openai(promt, schema_dict = None, data_dict = None, f
     }
 
     if web_search:
-        promt += "\nUse the following addtional information\n"
-        from duckduckgo_search import DDGS
-        results = DDGS().text(org_promt, max_results=10, region = "de-de",
-            safesearch = "moderate",
-            backend = "api",
-        )
-        #print(results)
-        for res in results:
-            promt += f'Title: {res["title"]}\n Description: {res["body"]}\n Link: {res["href"]}\n======'
+        promt += "\nUse the following addtional information\n\n"
+        from osw_chatbot.websearch.interative_websearch import invoke
+        import asyncio
+        res = asyncio.run(invoke("Search in the web for addition information that could help to resolve the following request:\n" + org_promt))
+        promt += res["output"]
 
     if files is not None:
         promt += "\nUse the following addtional information\n"
