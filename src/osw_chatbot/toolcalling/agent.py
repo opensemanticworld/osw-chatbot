@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 import asyncio
 import json
 
@@ -11,9 +11,13 @@ from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 
 import langchain_core
 
-from llm import llm, embeddings
+from osw_chatbot.llm import llm, embeddings
 
 from langchain_core.vectorstores import InMemoryVectorStore
+
+from osw_chatbot.structured_output.llm import get_llm_response_azure_openai
+from osw_chatbot.websearch.interative_websearch import tools as websearch_tools
+from osw_chatbot.websearch.interative_websearch import invoke as websearch_invoke
 
 vector_store = InMemoryVectorStore(embeddings)
 
@@ -60,12 +64,36 @@ async def find_page_from_topic(topic) -> List[Dict[str, str]]:
     return response
 
 @langchain_core.tools.tool
-async def create_category_instance(category_page) -> str:
-    """Opens an editor to create an instance for the given category page. Returns 'success' if the editor was opened, else 'failure'."""
-    response = await call_client_side_tool({"type": "function_call", "name": "create_category_instance", "args": [category_page]})
+async def create_category_instance(category_page: str, instance_description: Optional[str] = None) -> str:
+    """Opens an editor to create an instance for the given category page. A description of the instance can be provided that supports to fill out the fields. Returns 'success' if the editor was opened, else 'failure'."""
+    
+    #print(schema)
+    default_data = None
+    if instance_description is not None:
+        try:
+            org_prompt = instance_description
+            prompt = org_prompt
+            prompt += "\nCreate only attributes that are defined in the schema. If you are not sure about an attributes, leave it empty.\n\n"
+            force_websearch = False
+            if force_websearch:
+                try:
+                    prompt += "\nUse the following addtional information\n\n"
+                    res = await websearch_invoke("Search in the web for addition information that could help to resolve the following request:\n" + org_prompt)
+                    prompt += res["output"]
+                except Exception as e:
+                    print(e)
+            jsonschema = await call_client_side_tool({"type": "function_call", "name": "get_category_schema", "args": [category_page]})
+            default_data_res = get_llm_response_azure_openai(prompt, jsonschema, None, None, False)
+            default_data = default_data_res["result"]
+            print("DESCRIPTION", instance_description, "DATA", default_data)
+        except Exception as e:
+            print(e)
+    response = await call_client_side_tool({"type": "function_call", "name": "create_category_instance", "args": [category_page, default_data]})
     return response
 
 tools = [multiply, redirect, find_page_from_topic, create_category_instance]
+# enable web search
+tools.extend(websearch_tools)
 
 prompt = ChatPromptTemplate.from_messages(
     [

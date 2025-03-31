@@ -21,7 +21,7 @@ def get_llm_response_azure_openai(promt, schema_dict = None, data_dict = None, f
         promt += "\nUse the following addtional information\n\n"
         from osw_chatbot.websearch.interative_websearch import invoke
         import asyncio
-        res = asyncio.run(invoke("Search in the web for addition information that could help to resolve the following request:\n" + org_promt))
+        res = asyncio.get_event_loop().run_until_complete(invoke("Search in the web for addition information that could help to resolve the following request:\n" + org_promt))
         promt += res["output"]
 
     if files is not None:
