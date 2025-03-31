@@ -350,7 +350,7 @@ class PlotToolPanel():
 
 
 ### some Agent backend stuff
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 class HistoryToolAgent():
     def __init__(self, tools, prompt_template = None):
@@ -377,7 +377,10 @@ class HistoryToolAgent():
         # Construct the Tools agent
         self.langchain_agent = create_tool_calling_agent(llm, tools, self.prompt_template)
         # Create an agent executor by passing in the agent and tools
-        self.agent_executor = AgentExecutor(agent=self.langchain_agent, tools=tools, verbose=True)
+        self.agent_executor = AgentExecutor(agent=self.langchain_agent,
+                                            tools=tools,
+                                            verbose=True,
+                                            return_intermediate_steps = True)
         #agent_executor.invoke({"input": "what is LangChain?"})
         self.chat_history = []
 
@@ -387,8 +390,11 @@ class HistoryToolAgent():
         #return tools_llm.invoke(prompt)
         #return agent_executor.invoke({"input": prompt})
         res = await self.agent_executor.ainvoke({"input": prompt, "chat_history": self.chat_history})
+        print("Whole result of invoke", res)
+        print ("Useful parts of result: ", res["intermediate_steps"])
         self.chat_history.extend([
             HumanMessage(content=prompt),
+            str(res["intermediate_steps"]),
             AIMessage(content=res["output"]),
         ])
         return res
