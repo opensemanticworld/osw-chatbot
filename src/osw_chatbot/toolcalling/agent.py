@@ -48,6 +48,22 @@ async def multiply(a: int, b: int) -> int:
     response = await call_client_side_tool({"type": "function_call", "name": "multiply", "args": [a, b]})
     return response
 
+class WebPage(BaseModel):
+    url: str
+    """The full url of the web page."""
+    title: str
+    """The title of the web page."""
+    content: str
+    """The html content of the page."""
+
+@langchain_core.tools.tool
+async def where_am_i() -> WebPage:
+    """Returns the current window.location url, the document.title and body html of the users browser client."""
+    
+    response = await call_client_side_tool({"type": "function_call", "name": "where_am_i", "args": []})
+    response = WebPage(**response)
+    return response
+
 @langchain_core.tools.tool
 async def redirect(page: str) -> str:
     """Redicts the user to the given page title or url. A page title must contain the namespace (e.g. 'Category:' or 'Item:'). Returns 'accepted' if the redirect was successful, else 'rejected'."""
@@ -91,7 +107,7 @@ async def create_category_instance(category_page: str, instance_description: Opt
     response = await call_client_side_tool({"type": "function_call", "name": "create_category_instance", "args": [category_page, default_data]})
     return response
 
-tools = [multiply, redirect, find_page_from_topic, create_category_instance]
+tools = [multiply, where_am_i, redirect, find_page_from_topic, create_category_instance]
 # enable web search
 tools.extend(websearch_tools)
 
