@@ -48,7 +48,10 @@ def build_app():
     chat_bot = pn.chat.ChatInterface(
         callback=get_response,
         #max_height=500,
-        #max_width=300,
+        max_width=500,
+        #min_height=300,
+        min_width=500,
+      # sizing_mode="stretch_width",
         show_send=True,
         show_rerun=False,
         show_undo=False,
@@ -57,7 +60,6 @@ def build_app():
         show_timestamp=False,
         show_button_name=False,
         show_reaction_icons=False,
-        sizing_mode="stretch_width",
         callback_exception="verbose",
         # stylesheets = [
         #     """
@@ -65,8 +67,25 @@ def build_app():
         # ],
     )
     terminal_mirror = TerminalMirrorPanel()
-    visualization_column = pn.Column( plot_tool_panel, terminal_mirror)
-    app = pn.Row(chat_bot, frontend_panel, visualization_column)
+    visualization_column = pn.Column(
+        plot_tool_panel,
+        terminal_mirror,
+      #  max_width=500,
+    )
+    app = pn.Row(pn.Column(chat_bot, min_width=300), frontend_panel,  ## maybe try flex box to make it reactive
+                 visualization_column,
+                 )
+
+    # def resize_callback(callback_str:str):
+    #     print("resize_callback: ", callback_str)
+    #
+    #     while len(visualization_column) > 0:
+    #         visualization_column.pop(0)
+    #     if "large" in callback_str:
+    #         print("enlarge")
+    #         visualization_column.extend([plot_tool_panel, terminal_mirror])
+    #         print(len(visualization_column))
+    #frontend_panel.resize_callback = resize_callback
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
     return app
 

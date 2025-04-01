@@ -45,11 +45,15 @@ DATA_PATH_DEFAULT = env_path = Path(__file__).parent.parent.parent.parent / "dat
 
 class OswFrontendPanel():
     """the class that will be handed over to OSW"""
-    def __init__(self, child_panels = None):
+    def __init__(self, child_panels = None, resize_callback = None):
+        """
+        child_panels:
+        """
         if child_panels is None:
             self.child_panels = []
         else:
             self.child_panels = child_panels
+        self.resize_callback = resize_callback
         self.build_panel()
 
     def build_panel(self):
@@ -107,6 +111,8 @@ class OswFrontendPanel():
         """resizes the chatbot window"""
         response = await self.call_client_side_tool(
             {"type": "function_call", "name": "resize_chatwindow", "args": []})
+        if self.resize_callback is not None:
+            self.resize_callback(response)
         return response
 
     def generate_langchain_tools(self)->List[langchain_core.tools.tool]:
@@ -186,7 +192,9 @@ class PlotToolPanel():
 
       #  self.matplotlib_panel = pn.pane.Matplotlib(self.fig, width = 600)
         self.image_panel = pn.pane.Image(self.fig, width = 600)
-        self.plot_panel = pn.Row(self.image_panel)
+        self.plot_panel = pn.Row(
+            #self.image_panel
+            )
         self._panel = self.plot_panel
 
     def load_data_from_csv(self, inp:LoadDataFromCsvInput) -> List[str]:
@@ -232,8 +240,8 @@ class PlotToolPanel():
         """
 
         with SandboxSession(
-            # lang="python",
-            lang=inp.lang,
+            lang="python",
+            #lang=inp.lang,
             libraries=inp.libraries,
             image="python:3.12-slim",
             # dockerfile=DOCKERFILE_SANDBOX_PATH,
@@ -242,7 +250,7 @@ class PlotToolPanel():
         ) as session:
             # Run the code in the sandbox
             try:
-                if True:#inp.file_path is not None:
+                if inp.file_path is not None:
                     filename = Path(inp.file_path).name
                     dest_filepath = "/sandbox/" + filename
                     session.copy_to_runtime(src = inp.file_path,
@@ -297,6 +305,11 @@ class PlotToolPanel():
                 return return_str
             except Exception as e:
                 return(str(e))
+
+    #def document_python_evaluation(self):
+    #    """documents the evaluation of something with a python snippet"""
+
+
 
 
     def attach_current_plot_to_osw_page(self, inp: AttachCurrentPlotToOswPageInput):
