@@ -260,9 +260,7 @@ class PlotToolPanel:
     def build_panel(self):
         #  self.matplotlib_panel = pn.pane.Matplotlib(self.fig, width = 600)
         self.image_panel = pn.pane.Image(self.fig, width=600)
-        self.plot_panel = pn.Row(
-            # self.image_panel
-        )
+        self.plot_panel = pn.Row(self.image_panel)
         self._panel = self.plot_panel
 
     def load_data_from_csv(self, inp: LoadDataFromCsvInput) -> List[str]:
