@@ -148,6 +148,12 @@ class AttachCurrentPlotToOswPageInput(BaseModel):
                                          "<NAMESPACE>:<OSW_ID> for example 'Item:OSW0b80ad413e954c87ac48bcc6ed784276' or 'Category:OSW0b80ad413e954c87ac48bcc6ed784276'.")
     format: str = Field(default="png", description="The format to save the plot in.")
 
+class DocumentPythonEvaluationInput(BaseModel):
+    python_evaluation_code: str = Field(..., description="The code that was used for the evaluation.")
+    uuid: str = Field(..., description="The uuid of the evaluation process.")
+    output_osw_id: str = Field(..., description="The OSW ID of the output of the evaluation process, e.g. the plot.")
+
+
 def read_local_csv_to_df(file_path: str):
     """
     reads a local file to a pandas dataframe
@@ -306,10 +312,16 @@ class PlotToolPanel():
             except Exception as e:
                 return(str(e))
 
-    #def document_python_evaluation(self):
-    #    """documents the evaluation of something with a python snippet"""
-
-
+    def document_python_evaluation(self, inp: DocumentPythonEvaluationInput):
+        """documents the evaluation of something with a python snippet"""
+        osw_obj = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
+        documentation_object = model.PythonEvaluationProcess(
+            python_evaluation_code=inp.python_evaluation_code,
+            uuid = inp.uuid,
+            output = inp.output_osw_id,
+            image = inp.output_osw_id,
+        )
+        osw_obj.store_entity(OSW.StoreEntityParam(entities=[documentation_object], overwrite=True))
 
 
     def attach_current_plot_to_osw_page(self, inp: AttachCurrentPlotToOswPageInput):
@@ -345,6 +357,8 @@ class PlotToolPanel():
             except Exception as e:
                 ret_msg += "error uploading plot to osw page: " + str(e)
             ## link it to the page:
+            if not hasattr(entity, "attachments"):
+                entity.attachments = []
             entity.attachments.append(get_full_title(wf))
             ## re-upload entity:
             osw_obj.store_entity(OSW.StoreEntityParam(entities=[entity], overwrite=True))
