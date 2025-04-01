@@ -12,4 +12,5 @@ accounts.pwd.yaml
 # Automatically added by osw.auth.CredentialManager.save_credentials_to_file:
 */Snippets/osw_files/*
 uv.lock
+data
 _ign
