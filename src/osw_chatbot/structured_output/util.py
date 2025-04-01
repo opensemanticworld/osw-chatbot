@@ -37,7 +37,9 @@ def deep_copy(obj):
 
 def deep_equal(x, y):
     if isinstance(x, dict) and isinstance(y, dict):
-        return x.keys() == y.keys() and all(deep_equal(x[key], y[key]) for key in x)
+        return x.keys() == y.keys() and all(
+            deep_equal(x[key], y[key]) for key in x
+        )
     return x == y
 
 

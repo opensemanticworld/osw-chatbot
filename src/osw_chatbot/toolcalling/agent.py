@@ -41,7 +41,9 @@ vector_store = InMemoryVectorStore(embeddings)
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate
 
-DATA_PATH_DEFAULT = env_path = Path(__file__).parent.parent.parent.parent / "data"
+DATA_PATH_DEFAULT = env_path = (
+    Path(__file__).parent.parent.parent.parent / "data"
+)
 
 
 class OswFrontendPanel:
@@ -105,7 +107,11 @@ class OswFrontendPanel:
         Returns a list of results with title, description and type
         """
         response = await self.call_client_side_tool(
-            {"type": "function_call", "name": "find_page_from_topic", "args": [topic]}
+            {
+                "type": "function_call",
+                "name": "find_page_from_topic",
+                "args": [topic],
+            }
         )
         return response
 
@@ -152,7 +158,9 @@ class LoadDataFromCsvInput(BaseModel):
     file_path: str = Field(
         ..., description="The path to the file to read to a pandas dataframe."
     )
-    delimiter: str = Field(default="\t", description="The delimiter of the csv file.")
+    delimiter: str = Field(
+        default="\t", description="The delimiter of the csv file."
+    )
     skip_rows: int = Field(
         default=0,
         description="The number of lines to skip at the beginning of the file.",
@@ -165,7 +173,9 @@ class AttachCurrentPlotToOswPageInput(BaseModel):
         description="Fullpagetitle of the page to attach the plot to. It has to be formatted like "
         "<NAMESPACE>:<OSW_ID> for example 'Item:OSW0b80ad413e954c87ac48bcc6ed784276' or 'Category:OSW0b80ad413e954c87ac48bcc6ed784276'.",
     )
-    format: str = Field(default="png", description="The format to save the plot in.")
+    format: str = Field(
+        default="png", description="The format to save the plot in."
+    )
 
 
 class DocumentPythonEvaluationInput(BaseModel):
@@ -187,7 +197,9 @@ def read_local_csv_to_df(file_path: str):
 
 
 class PlotByCodeInput(BaseModel):
-    lang: str = Field(default="python", description="The language code of the page.")
+    lang: str = Field(
+        default="python", description="The language code of the page."
+    )
     code: str = Field(
         ...,
         description="The code to run. The code must save a figure as .png into a io.BytesIO object "
@@ -210,9 +222,12 @@ class PlotByCodeInput(BaseModel):
 
 
 class RunCodeInput(BaseModel):
-    lang: str = Field(default="python", description="The language code of the page.")
+    lang: str = Field(
+        default="python", description="The language code of the page."
+    )
     code: str = Field(
-        ..., description="The code to run. Whatever is printed will be returned."
+        ...,
+        description="The code to run. Whatever is printed will be returned.",
     )
     file_path: Optional[str] = Field(
         default=None,
@@ -311,7 +326,9 @@ class PlotToolPanel:
                 image_base64_str = session.run(inp.code, inp.libraries).text
                 print("len(image_base64_str)", len(image_base64_str))
                 code_path = DATA_PATH_DEFAULT / "plot_codes" / "code.py"
-                session.copy_from_runtime(src="/tmp/code.py", dest=str(code_path))
+                session.copy_from_runtime(
+                    src="/tmp/code.py", dest=str(code_path)
+                )
 
                 ### check if the base64 string encodes an image:
                 image_bytes = b64decode(image_base64_str)
@@ -357,7 +374,9 @@ class PlotToolPanel:
                 return_str = session.run(inp.code, inp.libraries).text
                 print("len(image_base64_str)", len(return_str))
                 code_path = DATA_PATH_DEFAULT / "run_codes" / "code.py"
-                session.copy_from_runtime(src="/tmp/code.py", dest=str(code_path))
+                session.copy_from_runtime(
+                    src="/tmp/code.py", dest=str(code_path)
+                )
 
                 return return_str
             except Exception as e:
@@ -373,10 +392,14 @@ class PlotToolPanel:
             image=inp.output_osw_id,
         )
         osw_obj.store_entity(
-            OSW.StoreEntityParam(entities=[documentation_object], overwrite=True)
+            OSW.StoreEntityParam(
+                entities=[documentation_object], overwrite=True
+            )
         )
 
-    def attach_current_plot_to_osw_page(self, inp: AttachCurrentPlotToOswPageInput):
+    def attach_current_plot_to_osw_page(
+        self, inp: AttachCurrentPlotToOswPageInput
+    ):
         """uploads the current plot to the osw page with the given id"""
         ret_msg = ""
         try:
@@ -416,8 +439,9 @@ class PlotToolPanel:
             bytesio.name = wf.title
             try:
                 wf.put(bytesio, overwrite=True)
-                ret_msg += "plot successfully uploaded to osw page with uuid: " + str(
-                    wf.uuid
+                ret_msg += (
+                    "plot successfully uploaded to osw page with uuid: "
+                    + str(wf.uuid)
                 )
             except Exception as e:
                 ret_msg += "error uploading plot to osw page: " + str(e)

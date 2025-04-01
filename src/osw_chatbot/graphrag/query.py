@@ -92,7 +92,9 @@ def global_search(
             ["OLLAMA_HOST", os.getenv("OLLAMA_HOST")],
             [
                 "Ollama Num Context",
-                "Not Provided" if ollama_num_context is None else ollama_num_context,
+                "Not Provided"
+                if ollama_num_context is None
+                else ollama_num_context,
             ],
             ["Show References", str(show_references)],
             ["Repeat Instructions In Prompt", str(repeat_instructions)],
@@ -117,7 +119,8 @@ def global_search(
             ollama_num_context=ollama_num_context,
         ),
         prompt_builder=KeyPointsGeneratorPromptBuilder(
-            show_references=show_references, repeat_instructions=repeat_instructions
+            show_references=show_references,
+            repeat_instructions=repeat_instructions,
         ),
         context_builder=report_context_builder,
     )
@@ -192,7 +195,9 @@ def local_search(
             ["OLLAMA_HOST", os.getenv("OLLAMA_HOST")],
             [
                 "Ollama Num Context",
-                "Not Provided" if ollama_num_context is None else ollama_num_context,
+                "Not Provided"
+                if ollama_num_context is None
+                else ollama_num_context,
             ],
             ["Show References", str(show_references)],
             ["Repeat Instructions In Prompt", str(repeat_instructions)],
@@ -203,7 +208,9 @@ def local_search(
     # Reload the vector Store that stores
     # the entity name & description embeddings
     entities_collection_name = f"entity-{embedding_model}"
-    _LOGGER.info("[Vector Store] Entities Collection - %s", entities_collection_name)
+    _LOGGER.info(
+        "[Vector Store] Entities Collection - %s", entities_collection_name
+    )
     entities_vector_store = ChromaVectorStore(
         collection_name=entities_collection_name,
         persist_directory=str(vector_store_dir),

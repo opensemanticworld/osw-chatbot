@@ -102,7 +102,9 @@ async def web_search(param: WebSearchParam) -> WebSearchResult:
         )
         if headless:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-            browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
+            browser = await browser.new_context(
+                user_agent=user_agent, bypass_csp=True
+            )
         page = await browser.new_page()
         await page.goto(url)
         await page.wait_for_load_state("networkidle")
@@ -154,7 +156,9 @@ class BrowseWebPageResult(BaseModel):
 
 
 @langchain_core.tools.tool
-async def browse_web_page_tool(param: BrowseWebPageParam) -> BrowseWebPageResult:
+async def browse_web_page_tool(
+    param: BrowseWebPageParam,
+) -> BrowseWebPageResult:
     """Loads the given web page and returns the text content and links.
     Links can be followed to learn more about specific topics.
     """
@@ -185,7 +189,9 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
         )
         if headless:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-            browser = await browser.new_context(user_agent=user_agent, bypass_csp=True)
+            browser = await browser.new_context(
+                user_agent=user_agent, bypass_csp=True
+            )
         page = await browser.new_page()
         await page.goto(param.url)
         await page.wait_for_load_state("networkidle")
@@ -312,7 +318,9 @@ chat_history = []
 
 
 async def invoke(prompt):
-    res = await agent_executor.ainvoke({"input": prompt, "chat_history": chat_history})
+    res = await agent_executor.ainvoke(
+        {"input": prompt, "chat_history": chat_history}
+    )
     chat_history.extend(
         [
             HumanMessage(content=prompt),
@@ -335,7 +343,9 @@ def test_tools():
     import asyncio
 
     results = asyncio.run(
-        web_search(WebSearchParam(query="filtech exhibitor-list", max_results=1))
+        web_search(
+            WebSearchParam(query="filtech exhibitor-list", max_results=1)
+        )
     )
     for res in results:
         print(res.url)

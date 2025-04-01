@@ -43,7 +43,9 @@ vector_store = InMemoryVectorStore(embeddings)
 def index(input_file: Path):
     docs = TextLoader(file_path=input_file, encoding="utf-8").load()
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=200
+    )
     all_splits = text_splitter.split_documents(docs)
 
     # Index chunks
@@ -58,7 +60,9 @@ def retrieve(state: State):
 
 def generate(state: State):
     docs_content = "\n\n".join(doc.page_content for doc in state["context"])
-    messages = prompt.invoke({"question": state["question"], "context": docs_content})
+    messages = prompt.invoke(
+        {"question": state["question"], "context": docs_content}
+    )
     response = llm.invoke(messages)
     answer = response  # llama
     if hasattr(answer, "content"):

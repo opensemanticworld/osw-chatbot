@@ -38,7 +38,9 @@ def get_llm_response_azure_openai(
         promt += "\nUse the following addtional information\n"
         for file in files:
             if isinstance(file, dict):
-                promt += "\n\n" + data_url_to_text(file["name"], file["data_url"])
+                promt += "\n\n" + data_url_to_text(
+                    file["name"], file["data_url"]
+                )
             else:
                 promt += "\n\n" + data_url_to_text(file.name, file.data_url)
 

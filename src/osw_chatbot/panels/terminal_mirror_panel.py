@@ -9,7 +9,9 @@ class TerminalMirrorPanel:  ## inspired by https://stackoverflow.com/questions/6
 
     def __init__(self):
         self.terminal_panel = pn.widgets.Terminal(
-            options={"cursorBlink": True}, height=300, sizing_mode="stretch_width"
+            options={"cursorBlink": True},
+            height=300,
+            sizing_mode="stretch_width",
         )
         self.stdout = sys.stdout
         sys.stdout = self

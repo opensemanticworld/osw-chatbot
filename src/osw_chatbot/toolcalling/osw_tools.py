@@ -134,7 +134,9 @@ def download_osl_file(inp: DownlaodOslFileInput):
 
 
 class GetFileHeaderInput(BaseModel):
-    file_path: str = Field(description="The path to the file to get the header from.")
+    file_path: str = Field(
+        description="The path to the file to get the header from."
+    )
     n_lines: int = Field(
         default=10, description="The number of lines to read from the file."
     )
@@ -212,7 +214,9 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
         filter_string = ""
         for spl in inp.search_string.replace("-", "").split(" "):
             filter_string += (
-                'FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE("' + spl + '")))\n'
+                'FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE("'
+                + spl
+                + '")))\n'
             )
         sparql_query = (
             """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
@@ -237,7 +241,8 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
     sparql = SPARQLWrapper(sparql_url)
     sparql.setHTTPAuth("BASIC")
     sparql.setCredentials(
-        os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+        os.environ.get("BLAZEGRAPH_USER"),
+        os.environ.get("BLAZEGRAPH_PASSWORD"),
     )
 
     sparql.setQuery(sparql_query)
@@ -310,7 +315,8 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
     sparql = SPARQLWrapper(sparql_url)
     sparql.setHTTPAuth("BASIC")
     sparql.setCredentials(
-        os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+        os.environ.get("BLAZEGRAPH_USER"),
+        os.environ.get("BLAZEGRAPH_PASSWORD"),
     )
 
     sparql.setQuery(sparql_query)
@@ -327,7 +333,9 @@ class GetTopicTaxonomyInput(BaseModel):
     parent_depth: int = Field(
         10, description="The depth of searching for the parent classes"
     )
-    child_depth: int = Field(1, description="The depth of searching for child classes")
+    child_depth: int = Field(
+        1, description="The depth of searching for child classes"
+    )
 
 
 @tool
@@ -377,7 +385,8 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
     sparql = SPARQLWrapper(sparql_url)
     sparql.setHTTPAuth("BASIC")
     sparql.setCredentials(
-        os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+        os.environ.get("BLAZEGRAPH_USER"),
+        os.environ.get("BLAZEGRAPH_PASSWORD"),
     )
 
     sparql.setQuery(sparql_query)
@@ -389,7 +398,8 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
 
 class GetInstancesInput(BaseModel):
     osw_id: str = Field(
-        ..., description="The id of the category to find instances i.e. examples"
+        ...,
+        description="The id of the category to find instances i.e. examples",
     )
     max_number: int = Field(
         10, description="The maximum number of instances to be fetched"
@@ -443,7 +453,8 @@ def get_instances(inp: GetInstancesInput):
         sparql = SPARQLWrapper(sparql_url)
         sparql.setHTTPAuth("BASIC")
         sparql.setCredentials(
-            os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+            os.environ.get("BLAZEGRAPH_USER"),
+            os.environ.get("BLAZEGRAPH_PASSWORD"),
         )
 
         sparql.setQuery(sparql_query)
@@ -459,7 +470,9 @@ def get_instances(inp: GetInstancesInput):
 
 
 class GetWebsiteHtmlInput(BaseModel):
-    url: str = Field(..., description="The url of the website to get the html from.")
+    url: str = Field(
+        ..., description="The url of the website to get the html from."
+    )
 
 
 @tool

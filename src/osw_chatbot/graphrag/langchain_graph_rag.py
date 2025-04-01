@@ -36,7 +36,9 @@ df_text_units = text_unit_extractor.run([document])
 
 print(df_text_units.head())
 
-from langchain_graphrag.indexing.graph_generation import EntityRelationshipExtractor
+from langchain_graphrag.indexing.graph_generation import (
+    EntityRelationshipExtractor,
+)
 
 
 from llm import llm as er_llm
@@ -60,7 +62,11 @@ def analyse_graph():
     # You will see that every node has `description` and `text_unit_ids` as attributes
     print(text_unit_graphs[0].nodes["RICHARD MCCLINTOCK"])
     # You will see that every edge has `weight`, `description` and `text_unit_ids` as attributes
-    print(text_unit_graphs[0].edges[("RICHARD MCCLINTOCK", "HAMPDEN-SYDNEY COLLEGE")])
+    print(
+        text_unit_graphs[0].edges[
+            ("RICHARD MCCLINTOCK", "HAMPDEN-SYDNEY COLLEGE")
+        ]
+    )
 
 
 from langchain_graphrag.indexing.graph_generation import GraphsMerger

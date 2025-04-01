@@ -99,7 +99,9 @@ def index(
             ["OLLAMA_HOST", os.getenv("OLLAMA_HOST")],
             [
                 "Ollama Num Context",
-                "Not Provided" if ollama_num_context is None else ollama_num_context,
+                "Not Provided"
+                if ollama_num_context is None
+                else ollama_num_context,
             ],
         ]
     )
@@ -179,9 +181,11 @@ def index(
 
     report_writer = CommunityReportWriter()
 
-    communities_report_artifacts_generator = CommunitiesReportsArtifactsGenerator(
-        report_generator=report_generator,
-        report_writer=report_writer,
+    communities_report_artifacts_generator = (
+        CommunitiesReportsArtifactsGenerator(
+            report_generator=report_generator,
+            report_writer=report_writer,
+        )
     )
 
     text_units_artifacts_generator = TextUnitsArtifactsGenerator()

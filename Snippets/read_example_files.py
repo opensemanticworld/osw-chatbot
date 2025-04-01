@@ -2,7 +2,9 @@ from pydantic import BaseModel, Field
 
 
 class GetFileHeaderInput(BaseModel):
-    file_path: str = Field(description="The path to the file to get the header from.")
+    file_path: str = Field(
+        description="The path to the file to get the header from."
+    )
     n_lines: int = Field(
         default=10, description="The number of lines to read from the file."
     )

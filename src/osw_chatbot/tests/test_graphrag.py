@@ -40,7 +40,9 @@ def test_rag_query():
 
 
 def test_index():
-    artifacts = index(input_file=test_input, output_dir=output_dir, cache_dir=cache_dir)
+    artifacts = index(
+        input_file=test_input, output_dir=output_dir, cache_dir=cache_dir
+    )
 
     # check if the pandas dataframe contains a row with title="RICHARD MCCLINTOCK" with type="PERSON"
     # print(artifacts.entities)

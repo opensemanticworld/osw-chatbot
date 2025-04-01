@@ -26,7 +26,7 @@ pn.config.theme = "dark"
 def build_app():
     plot_tool_panel = PlotToolPanel()
     # frontend_panel = OswFrontendPanel(child_panels=[plot_tool_panel])
-    frontend_panel = OswFrontendPanel(child_panels=[])
+    frontend_panel = OswFrontendPanel()
     tools = [
         *plot_tool_panel.generate_langchain_tools(),
         *frontend_panel.generate_langchain_tools(),
@@ -44,18 +44,14 @@ def build_app():
 
     async def get_response(contents, user, instance):
         print(contents)
-        # frontend.function_call = json.loads(json.dumps({"name": "get_response", "args": [contents]}))
         response = await agent.invoke(contents)
         print(response)
         return response["output"]  # ["answer"]
 
     chat_bot = pn.chat.ChatInterface(
         callback=get_response,
-        # max_height=500,
-        max_width=500,
-        # min_height=300,
+        # max_width=500,
         min_width=500,
-        # sizing_mode="stretch_width",
         show_send=True,
         show_rerun=False,
         show_undo=False,
@@ -65,36 +61,69 @@ def build_app():
         show_button_name=False,
         show_reaction_icons=False,
         callback_exception="verbose",
-        # stylesheets = [
-        #     """
-        #     """
-        # ],
     )
     terminal_mirror = TerminalMirrorPanel()
-    visualization_column = pn.Column(
-        plot_tool_panel,
-        terminal_mirror,
-        #  max_width=500,
-    )
-    app = pn.Row(
-        pn.Column(chat_bot, min_width=300),
-        frontend_panel,  ## maybe try flex box to make it reactive
-        visualization_column,
+
+    # Responsive Layout with CSS Grid and Media Queries
+    media_query = """
+    @media screen and (max-width: 768px) {
+        div[id^="flexbox"] {
+            flex-flow: column !important;
+            width: 100vw !important;
+            height: auto !important;
+        }
+    }
+    @media screen and (min-width: 769px) and (max-width: 1200px) {
+        div[id^="flexbox"] {
+            flex-flow: row wrap !important;
+            width: 100vw !important;
+            height: auto !important;
+        }
+    }
+    @media screen and (min-width: 1201px) {
+        div[id^="flexbox"] {
+            flex-flow: row nowrap !important;
+            height: 100vh !important;
+            width: 100vw !important;
+        }
+    }
+    """
+
+    chat_bot_pn = pn.Column(
+        chat_bot,
+        # min_width=500,
+        min_height=370,
+        max_width=800,
+        max_height=800,
     )
 
-    # def resize_callback(callback_str:str):
-    #     print("resize_callback: ", callback_str)
-    #
-    #     while len(visualization_column) > 0:
-    #         visualization_column.pop(0)
-    #     if "large" in callback_str:
-    #         print("enlarge")
-    #         visualization_column.extend([plot_tool_panel, terminal_mirror])
-    #         print(len(visualization_column))
-    # frontend_panel.resize_callback = resize_callback
+    visualization_column = pn.Column(
+        pn.Row(
+            plot_tool_panel,
+        ),
+        pn.Row(terminal_mirror),
+        min_height=370,
+        width=900,
+        # sizing_mode="stretch_width",
+    )
+    app = pn.FlexBox(
+        chat_bot_pn,
+        frontend_panel,
+        visualization_column,
+        stylesheets=[media_query],
+    )
+    # app = pn.FlexBox(red, green, blue, stylesheets=[media_query]).servable()
+
     chat_bot.send("what's on your mind?", user="Assistant", respond=False)
+    # chat_bot.send(
+    #     "Search for a page that has a .csv file attachend, enshure to remember the path of the page, download it, and then plot it. Please show also the URL of the page where the file is located.",
+    #     user="User",
+    # )
     return app
 
+
+pn.extension("terminal")
+build_app().servable()
 
 if __name__ == "__main__":
     pn.serve(build_app, port=52670)

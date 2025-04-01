@@ -28,9 +28,7 @@ print(server)
 def get_full_context(subject=None):
     from SPARQLWrapper import SPARQLWrapper, JSON  # pip install sparqlwrapper
 
-    sparql_url = (
-        "https://graph.battery.knowledge-graph.eu/blazegraph/namespace/kb/sparql"
-    )
+    sparql_url = "https://graph.battery.knowledge-graph.eu/blazegraph/namespace/kb/sparql"
     sparql_query = """
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
