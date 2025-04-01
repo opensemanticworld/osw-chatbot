@@ -50,22 +50,28 @@ from langchain_graphrag.indexing.report_generation import (
     CommunityReportWriter,
 )
 
-#app = Typer()
+# app = Typer()
 
 
-#@app.command()
+# @app.command()
 def index(
-    input_file: Path = Path("input-data", "book.txt"), # = typer.Option(..., dir_okay=False, file_okay=True, exists=True),
-    output_dir: Path = Path("temp"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    cache_dir: Path = Path("temp", "cache"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    llm_type: LLMType = LLMType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    llm_model: str = "gpt-4o-2024-08-06", # = typer.Option(..., case_sensitive=False),
-    embedding_type: EmbeddingModelType = EmbeddingModelType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    embedding_model: str = "text-embedding-ada-002-2", # = typer.Option(..., case_sensitive=False),
-    chunk_size: int = 1200, # = typer.Option(1200, help="Chunk size for text splitting"),
-    chunk_overlap: int = 100, # = typer.Option(100, help="Chunk overlap for text splitting"),
-    ollama_num_context: int = None, # = typer.Option(None, help="Context window size for ollama model"),
-    enable_langsmith: bool = False, # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
+    input_file: Path = Path(
+        "input-data", "book.txt"
+    ),  # = typer.Option(..., dir_okay=False, file_okay=True, exists=True),
+    output_dir: Path = Path(
+        "temp"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    cache_dir: Path = Path(
+        "temp", "cache"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    llm_type: LLMType = LLMType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    llm_model: str = "gpt-4o-2024-08-06",  # = typer.Option(..., case_sensitive=False),
+    embedding_type: EmbeddingModelType = EmbeddingModelType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    embedding_model: str = "text-embedding-ada-002-2",  # = typer.Option(..., case_sensitive=False),
+    chunk_size: int = 1200,  # = typer.Option(1200, help="Chunk size for text splitting"),
+    chunk_overlap: int = 100,  # = typer.Option(100, help="Chunk overlap for text splitting"),
+    ollama_num_context: int = None,  # = typer.Option(None, help="Context window size for ollama model"),
+    enable_langsmith: bool = False,  # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
 ) -> IndexerArtifacts:
     if enable_langsmith:
         trace_via_langsmith()
@@ -76,7 +82,7 @@ def index(
     artifacts_dir = output_dir / get_artifacts_dir_name(llm_model)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    #tableprint.table(
+    # tableprint.table(
     print(
         [
             ["LangSmith", str(enable_langsmith)],
@@ -116,7 +122,7 @@ def index(
     # entity_extractor = EntityRelationshipExtractor.build_default(
     #     llm=make_llm_instance(llm_type, llm_model, cache_dir),
     #     chain_config={"tags": ["er-extraction"]},
-    #     
+    #
     # )
     entity_extractor = EntityRelationshipExtractor(
         prompt_builder=EntityExtractionPromptBuilder(
@@ -125,7 +131,6 @@ def index(
         llm=make_llm_instance(llm_type, llm_model, cache_dir),
         chain_config={"tags": ["er-extraction"]},
     )
-
 
     # Entity Relationship Description Summarizer
     entity_summarizer = EntityRelationshipDescriptionSummarizer.build_default(
@@ -202,7 +207,7 @@ def index(
     return artifacts
 
 
-#@app.command()
+# @app.command()
 def report(
     artifacts_dir: Path = typer.Option(
         ...,

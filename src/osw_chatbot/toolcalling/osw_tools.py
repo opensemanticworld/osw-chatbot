@@ -1,8 +1,10 @@
 """this file shall contain useful functions to be used for the interaction
- with OpenSemanticLab
- many tools are found at https://github.com/opensemanticworld/mediawiki-extensions-Chatbot/blob/main/modules/ext.osw.ui.chatbot/chatbot.js
- """
+with OpenSemanticLab
+many tools are found at https://github.com/opensemanticworld/mediawiki-extensions-Chatbot/blob/main/modules/ext.osw.ui.chatbot/chatbot.js
+"""
+
 import dotenv
+
 dotenv.load_dotenv()
 from langchain.tools import tool
 
@@ -14,29 +16,39 @@ import os
 from uuid import UUID
 import re
 import pandas as pd
+
 osw = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
 
+
 class GetPageHtmlInput(BaseModel):
-    fullpagetitle: str = Field(..., description="The title of the page to get the html from including the namespace. "
-                                                "Example: Item:OSW70b4d6464c1d44a887eb86e3b39b8751")
+    fullpagetitle: str = Field(
+        ...,
+        description="The title of the page to get the html from including the namespace. "
+        "Example: Item:OSW70b4d6464c1d44a887eb86e3b39b8751",
+    )
+
 
 @tool
-def get_page_html(inp:GetPageHtmlInput):
+def get_page_html(inp: GetPageHtmlInput):
     """Get the html content of a page from the main slot. This schould contain most of the information the user would see
-     on this page (exceot for contend rendered with javascript)"""
+    on this page (exceot for contend rendered with javascript)"""
     json_with_html = osw.site._site.raw_api(
-        action="parse",
-        page=inp.fullpagetitle,
-        format="json")
-    return(json_with_html)
+        action="parse", page=inp.fullpagetitle, format="json"
+    )
+    return json_with_html
+
 
 class DownlaodOslFileInput(BaseModel):
-    osw_id: str = Field(..., description="The id of the OSW element to download the file from. Can start with File: "
-                                         "or OSW, for example File:OSW29b9f7873b6f4752beafc4cc57b65db2.csv")
+    osw_id: str = Field(
+        ...,
+        description="The id of the OSW element to download the file from. Can start with File: "
+        "or OSW, for example File:OSW29b9f7873b6f4752beafc4cc57b65db2.csv",
+    )
+
 
 @tool
 def download_osl_file(inp: DownlaodOslFileInput):
-    """ Download a file from an OSW instance and save it to a local file
+    """Download a file from an OSW instance and save it to a local file
     returns
 
     local_file_path: str the local path to the downloaded file"""
@@ -44,7 +56,6 @@ def download_osl_file(inp: DownlaodOslFileInput):
 
     try:
         if not inp.osw_id.startswith("File:"):
-
             if inp.osw_id.startswith("OSW"):
                 inp.osw_id = "File:" + inp.osw_id
             else:
@@ -52,15 +63,15 @@ def download_osl_file(inp: DownlaodOslFileInput):
 
         print("downloading ", inp.osw_id)
         local_file = osw_download_file(
-            "https://mat-o-lab.open-semantic-lab.org/wiki/"+
-            inp.osw_id,
+            "https://mat-o-lab.open-semantic-lab.org/wiki/" + inp.osw_id,
             # , use_cached=True
-            overwrite=True
+            overwrite=True,
         )
         local_file_path = local_file.path
-        return(local_file_path)
+        return local_file_path
     except Exception as e:
         return "could not download file, excpetion " + str(e)
+
 
 # class GetShortestPathInput(BaseModel):
 #     start_node: str = Field(..., description="The start node of the path")
@@ -121,28 +132,34 @@ def download_osl_file(inp: DownlaodOslFileInput):
           FILTER(?p != 	<https://mat-o-lab.open-semantic-lab.org/id/Property-3AHas_query>)
           }"""
 
+
 class GetFileHeaderInput(BaseModel):
     file_path: str = Field(description="The path to the file to get the header from.")
-    n_lines: int = Field(default=10, description="The number of lines to read from the file.")
+    n_lines: int = Field(
+        default=10, description="The number of lines to read from the file."
+    )
+
 
 @tool
 def get_file_header(inp: GetFileHeaderInput):
     """a function that reads the header of a file and returns it as text"""
     if inp.file_path.endswith(".txt") or inp.file_path.endswith(".csv"):
-        with open(inp.file_path, 'r') as file:
+        with open(inp.file_path, "r") as file:
             lines = [next(file) for _ in range(10)]
-        return ''.join(lines)
+        return "".join(lines)
 
 
 class SparqlSearchFunctionInput(BaseModel):
-    search_string: str = Field(...,
-                               description="The search string to look for. All words inside the search string must be contained in the normalized label.")
-
+    search_string: str = Field(
+        ...,
+        description="The search string to look for. All words inside the search string must be contained in the normalized label.",
+    )
 
 
 def check_for_uuid(input_str):
-    pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     return re.match(pattern, input_str, re.IGNORECASE) is not None
+
 
 def try_cast_str_to_uuid(input_str):
     if check_for_uuid(input_str):
@@ -158,6 +175,7 @@ def try_cast_str_to_uuid(input_str):
         return uuid
     return None
 
+
 @tool
 def sparql_search_function(inp: SparqlSearchFunctionInput):
     """Search for a string in the Mat-O-Lab OSW."""
@@ -167,7 +185,8 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
     search_string_uuid = try_cast_str_to_uuid(inp.search_string)
     if search_string_uuid is not None:
         ## directly search for elements with found uuid:
-        sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        sparql_query = (
+            """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
         PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
         PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
@@ -182,17 +201,21 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
           ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext.
           
           ?node Property:HasOswId ?osw_id.
-          FILTER(?uuid = \"""" + search_string_uuid + """\")
+          FILTER(?uuid = \""""
+            + search_string_uuid
+            + """\")
         }"""
+        )
 
     else:
-
-
         ## generate filter string:
         filter_string = ""
         for spl in inp.search_string.replace("-", "").split(" "):
-            filter_string += "FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE(\"" + spl + "\")))\n"
-        sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            filter_string += (
+                'FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE("' + spl + '")))\n'
+            )
+        sparql_query = (
+            """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
     PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
     PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
@@ -204,13 +227,18 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
     WHERE {
       ?node Property:HasNormalizedLabel ?label .
       ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext
-             """ + filter_string + """
+             """
+            + filter_string
+            + """
              ?node Property:HasOswId ?osw_id
     }"""
+        )
 
     sparql = SPARQLWrapper(sparql_url)
-    sparql.setHTTPAuth('BASIC')
-    sparql.setCredentials(os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD"))
+    sparql.setHTTPAuth("BASIC")
+    sparql.setCredentials(
+        os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+    )
 
     sparql.setQuery(sparql_query)
     sparql.setReturnFormat(JSON)
@@ -219,9 +247,12 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
 
 
 class FindOutEverythingAboutInput(BaseModel):
-    osw_id: str = Field(..., description="The id of the OSW element to find out everything about, for example for "
-                                         "example File:OSW29b9f7873b6f4752beafc4cc57b65db2 ",
-                                    regex=".*OSW[0-9a-f]{32}.*")
+    osw_id: str = Field(
+        ...,
+        description="The id of the OSW element to find out everything about, for example for "
+        "example File:OSW29b9f7873b6f4752beafc4cc57b65db2 ",
+        regex=".*OSW[0-9a-f]{32}.*",
+    )
     depth: int = Field(1, description="The depth of the search. Default is 1.")
 
 
@@ -235,9 +266,12 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
 
     sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
 
-    osw_id = inp.osw_id.split(":")[-1].split('.')[0]  ## second split: get rid of file ending e.g. .csv
+    osw_id = inp.osw_id.split(":")[-1].split(".")[
+        0
+    ]  ## second split: get rid of file ending e.g. .csv
     my_uuid = str(UUID(osw_id.replace("OSW", "")))
-    sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    sparql_query = (
+        """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
         PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
         PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
@@ -248,27 +282,36 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
         SELECT DISTINCT ?s ?p ?o ?s_label ?p_label ?o_label
         WHERE{
             {?s ?p ?o .
-            ?s Property:HasUuid \"""" + str(my_uuid) + """\" .
+            ?s Property:HasUuid \""""
+        + str(my_uuid)
+        + """\" .
             ?s Property:HasName ?s_label .
             ?p Property:HasName ?p_label .
             ?o Property:HasName ?o_label .}
             UNION
             {?s ?p ?o .
-            ?o Property:HasUuid \"""" + str(my_uuid) + """\" .
+            ?o Property:HasUuid \""""
+        + str(my_uuid)
+        + """\" .
             ?s Property:HasName ?s_label .
             ?p Property:HasName ?p_label .
             ?o Property:HasName ?o_label .
             }
             UNION
             {?s ?p ?o .
-            ?s Property:HasUuid \"""" + str(my_uuid) + """\" .
+            ?s Property:HasUuid \""""
+        + str(my_uuid)
+        + """\" .
             }
         } """
+    )
 
     print(sparql_query)
     sparql = SPARQLWrapper(sparql_url)
-    sparql.setHTTPAuth('BASIC')
-    sparql.setCredentials(os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD"))
+    sparql.setHTTPAuth("BASIC")
+    sparql.setCredentials(
+        os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+    )
 
     sparql.setQuery(sparql_query)
     sparql.setReturnFormat(JSON)
@@ -277,8 +320,13 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
 
 
 class GetTopicTaxonomyInput(BaseModel):
-    osw_id: str = Field(..., description="The id of the central OSW element to find out all parent and sub-classes")
-    parent_depth: int = Field(10, description="The depth of searching for the parent classes")
+    osw_id: str = Field(
+        ...,
+        description="The id of the central OSW element to find out all parent and sub-classes",
+    )
+    parent_depth: int = Field(
+        10, description="The depth of searching for the parent classes"
+    )
     child_depth: int = Field(1, description="The depth of searching for child classes")
 
 
@@ -289,9 +337,12 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
 
     sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
 
-    osw_id = inp.osw_id.split(":")[-1].split('.')[0]  ## second split: get rid of file ending
+    osw_id = inp.osw_id.split(":")[-1].split(".")[
+        0
+    ]  ## second split: get rid of file ending
     my_uuid = str(UUID(osw_id.replace("OSW", "")))
-    sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+    sparql_query = (
+        """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
         PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
         PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
@@ -302,25 +353,32 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
         SELECT DISTINCT ?s_label ?p ?p_label ?o ?o_label ?s_id ?o_id
         WHERE{
             {?s ?p ?o .
-            ?s (^Property:SubClassOf)*/Property:HasUuid \"""" + str(my_uuid) + """\" .
+            ?s (^Property:SubClassOf)*/Property:HasUuid \""""
+        + str(my_uuid)
+        + """\" .
             ?s Property:HasName ?s_label .
             ?p Property:HasName ?p_label .
             ?o Property:HasName ?o_label .
             ?o Property:HasOswId ?o_id .} 
             UNION 
             {?s ?p ?o .
-            ?s (Property:SubClassOf)*/Property:HasUuid \"""" + str(my_uuid) + """\" .
+            ?s (Property:SubClassOf)*/Property:HasUuid \""""
+        + str(my_uuid)
+        + """\" .
             ?s Property:HasName ?s_label .
             ?p Property:HasName ?p_label .
             ?o Property:HasName ?o_label .
             ?o Property:HasOswId ?o_id .}
 
         } """
+    )
 
     print(sparql_query)
     sparql = SPARQLWrapper(sparql_url)
-    sparql.setHTTPAuth('BASIC')
-    sparql.setCredentials(os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD"))
+    sparql.setHTTPAuth("BASIC")
+    sparql.setCredentials(
+        os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+    )
 
     sparql.setQuery(sparql_query)
     sparql.setReturnFormat(JSON)
@@ -330,8 +388,12 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
 
 
 class GetInstancesInput(BaseModel):
-    osw_id: str = Field(..., description="The id of the category to find instances i.e. examples")
-    max_number: int = Field(10, description="The maximum number of instances to be fetched")
+    osw_id: str = Field(
+        ..., description="The id of the category to find instances i.e. examples"
+    )
+    max_number: int = Field(
+        10, description="The maximum number of instances to be fetched"
+    )
 
 
 @tool
@@ -342,9 +404,12 @@ def get_instances(inp: GetInstancesInput):
     try:
         sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
 
-        osw_id = inp.osw_id.split(":")[-1].split('.')[0]  ## second split: get rid of file ending
+        osw_id = inp.osw_id.split(":")[-1].split(".")[
+            0
+        ]  ## second split: get rid of file ending
         my_uuid = str(UUID(osw_id.replace("OSW", "")))
-        sparql_query = """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        sparql_query = (
+            """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
             PREFIX owl: <http://www.w3.org/2002/07/owl#>
             PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
             PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
@@ -355,24 +420,31 @@ def get_instances(inp: GetInstancesInput):
             SELECT DISTINCT ?s_label ?p ?p_label ?o ?o_label ?s_id ?o_id
             WHERE{
                 {?s ?p ?o .
-                ?s Property:HasType/(^Property:SubClassOf)*/Property:HasUuid \"""" + str(my_uuid) + """\" .
+                ?s Property:HasType/(^Property:SubClassOf)*/Property:HasUuid \""""
+            + str(my_uuid)
+            + """\" .
                 ?s Property:HasName ?s_label .
                 ?p Property:HasName ?p_label .
                 ?o Property:HasName ?o_label .
                 ?o Property:HasOswId ?o_id .} 
                 UNION 
                 {?s ?p ?o .
-                ?s Property:HasType/(Property:SubClassOf)*/Property:HasUuid \"""" + str(my_uuid) + """\" .
+                ?s Property:HasType/(Property:SubClassOf)*/Property:HasUuid \""""
+            + str(my_uuid)
+            + """\" .
                 ?s Property:HasName ?s_label .
                 ?p Property:HasName ?p_label .
                 ?o Property:HasName ?o_label .
                 ?o Property:HasOswId ?o_id .}
             } """
+        )
 
         # print(sparql_query)
         sparql = SPARQLWrapper(sparql_url)
-        sparql.setHTTPAuth('BASIC')
-        sparql.setCredentials(os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD"))
+        sparql.setHTTPAuth("BASIC")
+        sparql.setCredentials(
+            os.environ.get("BLAZEGRAPH_USER"), os.environ.get("BLAZEGRAPH_PASSWORD")
+        )
 
         sparql.setQuery(sparql_query)
         sparql.setReturnFormat(JSON)
@@ -380,8 +452,10 @@ def get_instances(inp: GetInstancesInput):
         print("resultate des queries", results)
         return results
     except Exception as e:
-        return ("no instances found. The name of the class might be not avialable. Try to use the search funciton to "
-                "find available classes")
+        return (
+            "no instances found. The name of the class might be not avialable. Try to use the search funciton to "
+            "find available classes"
+        )
 
 
 class GetWebsiteHtmlInput(BaseModel):
@@ -389,7 +463,7 @@ class GetWebsiteHtmlInput(BaseModel):
 
 
 @tool
-def get_website_html(inp:GetWebsiteHtmlInput):
+def get_website_html(inp: GetWebsiteHtmlInput):
     """gets the html content of a webpage."""
 
     url = inp.url
@@ -398,4 +472,3 @@ def get_website_html(inp:GetWebsiteHtmlInput):
     html_bytes = page.read()
     html = html_bytes.decode("utf-8")
     return html
-

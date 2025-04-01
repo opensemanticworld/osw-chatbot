@@ -4,17 +4,22 @@ import json
 import copy
 from copy import deepcopy
 
+
 def is_object(item):
     return item is not None and isinstance(item, dict)
+
 
 def is_array(item):
     return isinstance(item, list)
 
+
 def is_string(item):
     return isinstance(item, str)
 
+
 def is_integer(item):
     return isinstance(item, int)
+
 
 def is_number(item):
     try:
@@ -23,14 +28,18 @@ def is_number(item):
     except ValueError:
         return False
 
+
 def deep_copy(obj):
     import copy
+
     return copy.deepcopy(obj)
+
 
 def deep_equal(x, y):
     if isinstance(x, dict) and isinstance(y, dict):
         return x.keys() == y.keys() and all(deep_equal(x[key], y[key]) for key in x)
     return x == y
+
 
 def unique_array(array):
     result = []
@@ -43,6 +52,7 @@ def unique_array(array):
         if add:
             result.append(item)
     return result
+
 
 def merge_deep(target, source):
     if not target:
@@ -67,23 +77,28 @@ def merge_deep(target, source):
                 output[key] = source[key]
     return output
 
-def merge_all_of(schema):
-    """The most specific schema is on the root level"""    
-    if isinstance(schema, dict):
-        merged_schema = {}     
-        
-        for key, value in schema.items():           
-            if key == "allOf":
-                pass # handled later
 
-            #if key == "$ref":
+def merge_all_of(schema):
+    """The most specific schema is on the root level"""
+    if isinstance(schema, dict):
+        merged_schema = {}
+
+        for key, value in schema.items():
+            if key == "allOf":
+                pass  # handled later
+
+            # if key == "$ref":
             #    pass # not implemented
 
             elif isinstance(value, dict):
                 merged_schema[key] = merge_all_of(value)
             elif isinstance(value, list):
-                merged_schema[key] = [merge_all_of(item) if isinstance(item, dict) else item for item in value]
-            else: merged_schema[key] = value
+                merged_schema[key] = [
+                    merge_all_of(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            else:
+                merged_schema[key] = value
 
             if key == "oneOf":
                 merged_schema["anyOf"] = merged_schema.pop("oneOf")
@@ -92,12 +107,13 @@ def merge_all_of(schema):
             for super_schema in schema["allOf"]:
                 # process it first
                 super_schema = merge_all_of(super_schema)
-                #print("merge", sub_schema, " with ", merged_schema)
+                # print("merge", sub_schema, " with ", merged_schema)
                 # then merge our schema over the super_schema
-                merged_schema = merge_deep(super_schema, merged_schema)  
-                
+                merged_schema = merge_deep(super_schema, merged_schema)
+
         return merged_schema
     return schema
+
 
 def modify_schema(schema):
     """makes jsonschema OpenAI conform, see https://platform.openai.com/docs/guides/structured-outputs/supported-schemas
@@ -131,6 +147,7 @@ def modify_schema(schema):
             modify_schema(item)
     return schema
 
+
 #!pip install textract
 import io
 import base64
@@ -139,21 +156,24 @@ import tempfile
 import urllib.request
 from pprint import pprint
 
+
 def data_url_to_text(file_name, data_url):
     response = urllib.request.urlopen(data_url)
-    #decoded_bytes = base64.b64decode(data_url.split("base64,")[-1])
-    #decoded_file = io.BytesIO(decoded_bytes)
+    # decoded_bytes = base64.b64decode(data_url.split("base64,")[-1])
+    # decoded_file = io.BytesIO(decoded_bytes)
     result = ""
-    with tempfile.NamedTemporaryFile(delete=False, suffix="." + file_name.split(".")[-1]) as temp_file:
+    with tempfile.NamedTemporaryFile(
+        delete=False, suffix="." + file_name.split(".")[-1]
+    ) as temp_file:
         with temp_file.file as file:
             file.write(response.file.read())
-        #temp_file.write(decoded_file.read())
+        # temp_file.write(decoded_file.read())
         temp_file_path = temp_file.name
         print(temp_file_path)
         # Step 5: Use the temporary file with textract
         # Step 4: Use the file-like object with textract
         # Assuming the content is plain text, specify the method accordingly
         extracted_text = process(temp_file_path)
-    
-        result = extracted_text.decode('utf-8')
+
+        result = extracted_text.decode("utf-8")
     return result

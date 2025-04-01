@@ -3,7 +3,6 @@ from langchain_core.documents import Document
 from langchain_graphrag.indexing import TextUnitExtractor
 
 
-
 SOME_TEXT = """
 Contrary to popular belief, Lorem Ipsum is not simply random text. 
 It has roots in a piece of classical Latin literature from 45 BC, 
@@ -27,6 +26,7 @@ document = Document(page_content=SOME_TEXT)
 
 
 from langchain_text_splitters import CharacterTextSplitter
+
 splitter = CharacterTextSplitter(chunk_size=512, chunk_overlap=64)
 
 text_unit_extractor = TextUnitExtractor(text_splitter=splitter)
@@ -39,15 +39,14 @@ print(df_text_units.head())
 from langchain_graphrag.indexing.graph_generation import EntityRelationshipExtractor
 
 
-
 from llm import llm as er_llm
+
 # There is a static method provide to build the default extractor
 extractor = EntityRelationshipExtractor.build_default(llm=er_llm)
 
+
 def analyse_graph():
     text_unit_graphs = extractor.invoke(df_text_units)
-
-
 
     for index, g in enumerate(text_unit_graphs):
         print("---------------------------------")
@@ -61,7 +60,8 @@ def analyse_graph():
     # You will see that every node has `description` and `text_unit_ids` as attributes
     print(text_unit_graphs[0].nodes["RICHARD MCCLINTOCK"])
     # You will see that every edge has `weight`, `description` and `text_unit_ids` as attributes
-    print(text_unit_graphs[0].edges[('RICHARD MCCLINTOCK', 'HAMPDEN-SYDNEY COLLEGE')])
+    print(text_unit_graphs[0].edges[("RICHARD MCCLINTOCK", "HAMPDEN-SYDNEY COLLEGE")])
+
 
 from langchain_graphrag.indexing.graph_generation import GraphsMerger
 
@@ -97,9 +97,11 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 
-fig = plt.figure(figsize=(12,12))
+fig = plt.figure(figsize=(12, 12))
 pos = nx.kamada_kawai_layout(G)
-nx.draw(G)#, nx.spring_layout(er_sanitized_graph), node_size=1500, node_color='yellow', font_size=8, font_weight='bold')
+nx.draw(
+    G
+)  # , nx.spring_layout(er_sanitized_graph), node_size=1500, node_color='yellow', font_size=8, font_weight='bold')
 nx.draw_networkx_labels(G, pos)
-#plt.savefig("Graph.png", format="PNG")
+# plt.savefig("Graph.png", format="PNG")
 plt.show()

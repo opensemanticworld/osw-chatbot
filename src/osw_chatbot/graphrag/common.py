@@ -62,10 +62,10 @@ def check_if_necessary_azure_env_set():
     azure_envs = [
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_API_KEY",
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_ENDPOINT",
-        #"LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_DEPLOYMENT",
+        # "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_DEPLOYMENT",
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_API_KEY",
         "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_ENDPOINT",
-        #"LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_DEPLOYMENT",
+        # "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_EMBED_DEPLOYMENT",
     ]
 
     check_required_envs(azure_envs)
@@ -115,9 +115,9 @@ def make_llm_instance(
             api_version="2024-05-01-preview",
             api_key=os.getenv("LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_API_KEY"),
             azure_endpoint=os.getenv("LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_ENDPOINT"),
-            #azure_deployment=os.getenv(
+            # azure_deployment=os.getenv(
             #    "LANGCHAIN_GRAPHRAG_AZURE_OPENAI_CHAT_DEPLOYMENT"
-            #),
+            # ),
             cache=SQLiteCache(str(cache_dir / "azure_openai_cache.db")),
             temperature=temperature,
             top_p=top_p,
@@ -140,7 +140,7 @@ def make_llm_instance(
 
         return OllamaLLM(
             model=model,
-            cache=SQLiteCache(str(cache_dir / f"ollama-{model.replace(':','-')}.db")),
+            cache=SQLiteCache(str(cache_dir / f"ollama-{model.replace(':', '-')}.db")),
             temperature=temperature,
             top_p=top_p,
             num_ctx=ollama_num_context,
@@ -244,4 +244,4 @@ def load_artifacts(path: Path) -> IndexerArtifacts:
 
 
 def get_artifacts_dir_name(model: str) -> str:
-    return f"artifacts-{model.replace(':','-')}"
+    return f"artifacts-{model.replace(':', '-')}"

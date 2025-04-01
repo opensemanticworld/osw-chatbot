@@ -53,29 +53,33 @@ from langchain_graphrag.query.local_search.context_selectors import (
 from langchain_graphrag.types.graphs.community import CommunityLevel
 from langchain_graphrag.utils import TiktokenCounter
 
-#app = Typer()
+# app = Typer()
 
 
-#@app.command()
+# @app.command()
 def global_search(
-    output_dir: Path = Path("temp"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    cache_dir: Path = Path("temp", "cache"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    llm_type: LLMType = LLMType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    llm_model: str = "gpt-4o-2024-08-06", # = typer.Option(..., case_sensitive=False),
-    query: str = 22, # = typer.Option(...),
-    level: int = 2, # = typer.Option(2, help="Community level to search"),
-    ollama_num_context: int = None, # = typer.Option(None, help="Context window size for ollama model"),
-    show_references: bool = True, # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
-    repeat_instructions: bool = True, # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
-    output_raw: bool = False, # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
-    enable_langsmith: bool = False, # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
+    output_dir: Path = Path(
+        "temp"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    cache_dir: Path = Path(
+        "temp", "cache"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    llm_type: LLMType = LLMType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    llm_model: str = "gpt-4o-2024-08-06",  # = typer.Option(..., case_sensitive=False),
+    query: str = 22,  # = typer.Option(...),
+    level: int = 2,  # = typer.Option(2, help="Community level to search"),
+    ollama_num_context: int = None,  # = typer.Option(None, help="Context window size for ollama model"),
+    show_references: bool = True,  # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
+    repeat_instructions: bool = True,  # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
+    output_raw: bool = False,  # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
+    enable_langsmith: bool = False,  # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
 ):
     if enable_langsmith:
         trace_via_langsmith()
 
     artifacts_dir = output_dir / get_artifacts_dir_name(llm_model)
 
-    #tableprint.table(
+    # tableprint.table(
     print(
         [
             ["LangSmith", str(enable_langsmith)],
@@ -146,21 +150,25 @@ def global_search(
         print(chunk, end="", flush=True)
 
 
-#@app.command()
+# @app.command()
 def local_search(
-    output_dir: Path = Path("temp"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    cache_dir: Path = Path("temp", "cache"), # = typer.Option(..., dir_okay=True, file_okay=False),
-    llm_type: LLMType = LLMType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    llm_model: str = "gpt-4o-2024-08-06", # = typer.Option(..., case_sensitive=False),
-    #query: str = 22, # = typer.Option(...),
-    level: int = 2, # = typer.Option(2, help="Community level to search"),
-    embedding_type: EmbeddingModelType = EmbeddingModelType.azure_openai, # = typer.Option(..., case_sensitive=False),
-    embedding_model: str = "text-embedding-ada-002-2", # = typer.Option(..., case_sensitive=False),
-    ollama_num_context: int = None, # = typer.Option(None, help="Context window size for ollama model"),
-    show_references: bool = True, # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
-    repeat_instructions: bool = True, # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
-    output_raw: bool = False, # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
-    enable_langsmith: bool = False, # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003    
+    output_dir: Path = Path(
+        "temp"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    cache_dir: Path = Path(
+        "temp", "cache"
+    ),  # = typer.Option(..., dir_okay=True, file_okay=False),
+    llm_type: LLMType = LLMType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    llm_model: str = "gpt-4o-2024-08-06",  # = typer.Option(..., case_sensitive=False),
+    # query: str = 22, # = typer.Option(...),
+    level: int = 2,  # = typer.Option(2, help="Community level to search"),
+    embedding_type: EmbeddingModelType = EmbeddingModelType.azure_openai,  # = typer.Option(..., case_sensitive=False),
+    embedding_model: str = "text-embedding-ada-002-2",  # = typer.Option(..., case_sensitive=False),
+    ollama_num_context: int = None,  # = typer.Option(None, help="Context window size for ollama model"),
+    show_references: bool = True,  # = typer.Option(True, help="Show references in the output"),  # noqa: FBT001, FBT003
+    repeat_instructions: bool = True,  # = typer.Option(  # noqa: FBT001 True,  # noqa: FBT003 help="Repeat instructions in the prompt",),
+    output_raw: bool = False,  # = typer.Option(False, help="Output raw response"),  # noqa: FBT001, FBT003
+    enable_langsmith: bool = False,  # = typer.Option(False, help="Enable Langsmith"),  # noqa: FBT001, FBT003
 ):
     if enable_langsmith:
         trace_via_langsmith()
@@ -168,7 +176,7 @@ def local_search(
     vector_store_dir = output_dir / "vector_stores"
     artifacts_dir = output_dir / get_artifacts_dir_name(llm_model)
 
-    #tableprint.table(
+    # tableprint.table(
     print(
         [
             ["LangSmith", str(enable_langsmith)],
@@ -177,7 +185,7 @@ def local_search(
             ["artifacts_dir", str(artifacts_dir)],
             ["llm_type", llm_type],
             ["llm_model", llm_model],
-            #["query", query],
+            # ["query", query],
             ["level", level],
             ["embedding_type", embedding_type],
             ["embedding_model", embedding_model],
@@ -259,6 +267,5 @@ def local_search(
     # print(search_chain.invoke(query, config={"tags": ["local-search"]}))
 
     # or, you could stream
-    #for chunk in search_chain.stream(query, config={"tags": ["local-search"]}):
+    # for chunk in search_chain.stream(query, config={"tags": ["local-search"]}):
     #    print(chunk, end="", flush=True)
-

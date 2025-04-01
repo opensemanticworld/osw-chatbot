@@ -4,10 +4,11 @@ from panel.custom import AnyWidgetComponent
 
 pn.extension()
 
+
 class ChatFrontendWidget(AnyWidgetComponent):
     function_call = param.Dict()
     function_called = param.Dict()
-    
+
     _esm = """
     function render({ model, el }) {
       console.log("frontend loaded");
@@ -28,8 +29,6 @@ class ChatFrontendWidget(AnyWidgetComponent):
     export default { render };
     """
 
-    
-    @param.depends('function_called', watch=True)
+    @param.depends("function_called", watch=True)
     def _update_function_called(self):
-        print("function_called", self.function_called)  
-
+        print("function_called", self.function_called)

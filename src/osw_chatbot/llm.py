@@ -3,17 +3,16 @@ from langchain_openai import AzureChatOpenAI
 from langchain_community.cache import SQLiteCache
 
 
-
 llm = AzureChatOpenAI(
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-    #azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
+    # azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
     api_version=os.environ["AZURE_OPENAI_API_VERSION"],
     model="gpt-4o-2024-08-06",
     cache=SQLiteCache("openai_cache.db"),
 )
 
-#from tools import tools
-#tools_llm = llm.bind_tools(tools)
+# from tools import tools
+# tools_llm = llm.bind_tools(tools)
 
 # from langchain_openai import AzureOpenAIEmbeddings
 
