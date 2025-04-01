@@ -178,14 +178,14 @@ class AttachCurrentPlotToOswPageInput(BaseModel):
     )
 
 
-class DocumentPythonEvaluationInput(BaseModel):
-    python_evaluation_code: str = Field(
-        ..., description="The code that was used for the evaluation."
-    )
-    uuid: str = Field(..., description="The uuid of the evaluation process.")
-    output_osw_id: str = Field(
+class DocumentCurrentEvaluationInput(BaseModel):
+    uuid: Optional[str] = Field(
         ...,
-        description="The OSW ID of the output of the evaluation process, e.g. the plot.",
+        description="The uuid of the evaluation process. A new uuid is generated if None",
+    )
+    output_osw_id: Optional[str] = Field(
+        ...,
+        description="The OSW ID of the output of the evaluation process, e.g. the OSW-Object plot.",
     )
 
 
@@ -256,6 +256,7 @@ class PlotToolPanel:
         self.df = None
         self.fig, self.ax = plt.subplots()
         self.build_panel()
+        self.current_input_osw_id = None
 
     def build_panel(self):
         #  self.matplotlib_panel = pn.pane.Matplotlib(self.fig, width = 600)
@@ -337,6 +338,14 @@ class PlotToolPanel:
                 self.image_panel.object = image_bytes
                 self.plot_panel.clear()
                 self.plot_panel.append(self.image_panel)
+                self.current_input_osw_id = (
+                    "File:" + filename
+                )  ## todo: replace this as soon as
+                # bytesio
+                # objects are used for intermediary storage
+
+                ## copy code to current Object
+                self.current_python_code = inp.code
                 return "Image successfully plotted"
             except Exception as e:
                 return (
@@ -377,23 +386,74 @@ class PlotToolPanel:
                 )
 
                 return return_str
+
             except Exception as e:
                 return str(e)
 
-    def document_python_evaluation(self, inp: DocumentPythonEvaluationInput):
+    def document_current_evaluation(self, inp: DocumentCurrentEvaluationInput):
         """documents the evaluation of something with a python snippet"""
-        osw_obj = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
-        documentation_object = model.PythonEvaluationProcess(
-            python_evaluation_code=inp.python_evaluation_code,
-            uuid=inp.uuid,
-            output=inp.output_osw_id,
-            image=inp.output_osw_id,
-        )
-        osw_obj.store_entity(
-            OSW.StoreEntityParam(
-                entities=[documentation_object], overwrite=True
+
+        ret_msg = ""
+        try:
+            osw_obj = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
+
+            ## upload the image and attach it as output
+            # upload the image:
+
+            ## save plot to bytesio object:
+            if self.plot_panel[0] == self.image_panel:
+                bytesio = io.BytesIO(self.image_panel.object)
+
+            elif self.plot_panel[0] == self.matplotlib_panel:
+                bytesio = io.BytesIO()
+                self.matplotlib_panel.object.savefig(bytesio, format="png")
+            else:
+                return "no plot to attach"
+            plot_uuid = uuid.uuid4()
+            wf = WikiFileController(
+                uuid=str(plot_uuid),
+                osw=osw_obj,
+                title="OSW" + str(plot_uuid).replace("-", "") + ".png",
+                label=[
+                    model.Label(
+                        text="Plot from Chatbot "
+                        + str(datetime.now().strftime("%Y-%m-%d_%H-%M"))
+                    )
+                ],
             )
-        )
+            bytesio.name = wf.title
+            try:
+                wf.put(bytesio, overwrite=True)
+                ret_msg += (
+                    "plot successfully uploaded to osw page with uuid: "
+                    + str(wf.uuid)
+                )
+            except Exception as e:
+                ret_msg += "error uploading plot to osw page: " + str(e)
+
+            ## link it to the documentation object:
+
+            documentation_object = model.PythonEvaluationProcess(
+                label=[
+                    model.Label(
+                        text="Python Evaluation from Chatbot "
+                        + str(datetime.now().strftime("%Y-%m-%d_%H-%M")),
+                        lang="en",
+                    )
+                ],
+                input=[self.current_input_osw_id],
+                python_evaluation_code=self.current_python_code,
+                uuid=inp.uuid,
+                output=[get_full_title(wf)],
+                image=get_full_title(wf),
+            )
+            osw_obj.store_entity(
+                OSW.StoreEntityParam(
+                    entities=[documentation_object], overwrite=True
+                )
+            )
+        except Exception as e:
+            return str(e)
 
     def attach_current_plot_to_osw_page(
         self, inp: AttachCurrentPlotToOswPageInput
@@ -469,6 +529,7 @@ class PlotToolPanel:
             langchain_core.tools.tool(self.attach_current_plot_to_osw_page),
             langchain_core.tools.tool(self.plot_by_code),
             langchain_core.tools.tool(self.run_code),
+            langchain_core.tools.tool(self.document_current_evaluation),
         ]
 
 
