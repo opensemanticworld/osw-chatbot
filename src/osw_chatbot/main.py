@@ -63,11 +63,6 @@ def build_app():
         )
         return response_message  # ["answer"]
 
-    text_input_widget = pn.widgets.TextInput(
-        # name="Search",
-        placeholder="Describe tasks here...",
-    )
-
     chat_bot = pn.chat.ChatInterface(
         callback=get_response,
         # max_width=500,
@@ -82,10 +77,6 @@ def build_app():
         show_button_name=False,
         show_reaction_icons=False,
         callback_exception="verbose",
-        widgets=[
-            text_input_widget,
-            # pn.widgets.FileInput(name="File", accept=".csv"),
-        ],
         # stylesheets=[style_chat],  # not working here, need to be
         # accessed via ChatFeed, where ChatInterface inherits ChatFeed
         # see below to access stylesheets via message_params
@@ -161,6 +152,18 @@ def build_app():
     # chat_bot.send(
     #     "Search for a page that has a .csv file attachend, enshure to remember the path of the page, download it, and then plot it. Please show also the URL of the page where the file is located.",
     #     user="User",
+    # )
+
+    # Video
+    # chat_bot.send(
+    #     value="Search for a tensile test",
+    #     user="🧑 User",
+    #     respond=True,
+    # )
+    # chat_bot.send(
+    #     value="Download the file of page `Demo Tinsile Test`",
+    #     user="🧑 User",
+    #     respond=True,
     # )
     return app
 
