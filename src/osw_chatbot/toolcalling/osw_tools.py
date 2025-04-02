@@ -26,7 +26,14 @@ class GetPageHtmlInput(BaseModel):
         description="The title of the page to get the html from including the namespace. "
         "Example: Item:OSW70b4d6464c1d44a887eb86e3b39b8751",
     )
-
+def replace_special_characters(s:str, replacer=" ") -> str:
+    """returns a string with all special characters replaced by a given replacer."""
+    for char in s:
+        if char.isalnum():
+            continue
+        s = s.replace(char, replacer)
+    s = s.replace("ä","").replace("ö","").replace("ü","").replace("ß","")
+    return s
 
 @tool
 def get_page_html(inp: GetPageHtmlInput):
@@ -144,17 +151,20 @@ class GetFileHeaderInput(BaseModel):
 
 @tool
 def get_file_header(inp: GetFileHeaderInput):
-    """a function that reads the header of a file and returns it as text"""
-    if inp.file_path.endswith(".txt") or inp.file_path.endswith(".csv"):
+    """a function that reads the header of a (text) file and returns it as text"""
+    try:
         with open(inp.file_path, "r") as file:
-            lines = [next(file) for _ in range(10)]
+            lines = [next(file) for _ in range(inp.n_lines)]
         return "".join(lines)
+    except Exception as e:
+        return str(e)
 
 
 class SparqlSearchFunctionInput(BaseModel):
     search_string: str = Field(
         ...,
-        description="The search string to look for. All words inside the search string must be contained in the normalized label.",
+        description="The search string to look for. All words inside the search string must be contained in the "
+                    "normalized label.",
     )
 
 
@@ -180,7 +190,9 @@ def try_cast_str_to_uuid(input_str):
 
 @tool
 def sparql_search_function(inp: SparqlSearchFunctionInput):
-    """Search for a string in the Mat-O-Lab OSW."""
+    """Search for a string in the Mat-O-Lab OSW. Hint: if the search for something in plural shape does not yield a
+    result, "
+                    "try the singular shape."""
 
     sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
     ## check if an osw-id is contained in the search string, then directly use it
@@ -212,7 +224,7 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
     else:
         ## generate filter string:
         filter_string = ""
-        for spl in inp.search_string.replace("-", "").split(" "):
+        for spl in replace_special_characters(inp.search_string).split(" "):
             filter_string += (
                 'FILTER(CONTAINS(LCASE(STR(?labeltext)), LCASE("'
                 + spl
