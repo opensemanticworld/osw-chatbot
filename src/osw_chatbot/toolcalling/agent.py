@@ -202,9 +202,7 @@ class PlotByCodeInput(BaseModel):
     )
     code: str = Field(
         ...,
-        description="The code to run. The code must save a figure as .png into a io.BytesIO object "
-        "and convert it to a base64 encoded string. Print this string to console ("
-        "but nothing else).",
+        description='The code to run. The code must save a figure as .png to  a file at "/tmp/output.png"',
     )
     file_path: Optional[str] = Field(
         default=None,
@@ -301,7 +299,7 @@ class PlotToolPanel:
 
     def plot_by_code(self, inp: PlotByCodeInput) -> str:
         """
-        Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the file_path parameter.
+        Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the file_path parameter. The plot must be saved as a .png file to "/tmp/output.png"
         """
 
         with SandboxSession(
@@ -315,6 +313,8 @@ class PlotToolPanel:
         ) as session:
             # Run the code in the sandbox
             try:
+                self.image_panel.object = None  ## to trigger re-plotting
+                filename = None
                 if inp.file_path is not None:
                     filename = Path(inp.file_path).name
                     dest_filepath = "/sandbox/" + filename
@@ -322,25 +322,35 @@ class PlotToolPanel:
                         src=inp.file_path,
                         dest=dest_filepath,
                     )
-                image_base64_str = session.run(inp.code, inp.libraries).text
-                print("len(image_base64_str)", len(image_base64_str))
+                return_str = session.run(inp.code, inp.libraries).text
+                print("return_str:", return_str)
                 code_path = DATA_PATH_DEFAULT / "plot_codes" / "code.py"
                 session.copy_from_runtime(
                     src="/tmp/code.py", dest=str(code_path)
                 )
+                output_file_path = DATA_PATH_DEFAULT / "outputs" / "output.png"
+                try:
+                    session.copy_from_runtime(
+                        src="/tmp/output.png", dest=str(output_file_path)
+                    )
+                    print("successfully copied file from sandbox")
+                except Exception as e:
+                    print("error copying file from sandbox. Error from here" ,  e, "String returned from sandbox: ", return_str)
+                ### check if the output file encodes an image:
 
-                ### check if the base64 string encodes an image:
-                image_bytes = b64decode(image_base64_str)
                 Image.open(
-                    io.BytesIO(image_bytes)
+                    output_file_path
                 )  # open the image to check if the file is correct.
 
-                self.image_panel.object = image_bytes
+                self.image_panel.object = output_file_path
                 self.plot_panel.clear()
                 self.plot_panel.append(self.image_panel)
-                self.current_input_osw_id = (
-                    "File:" + filename
-                )  ## todo: replace this as soon as
+                if filename is not None:
+                    self.current_input_osw_id = (
+                        "File:" + filename
+                    )
+                else:
+                    self.current_input_osw_id = None
                 # bytesio
                 # objects are used for intermediary storage
 
@@ -379,7 +389,6 @@ class PlotToolPanel:
                         dest=dest_filepath,
                     )
                 return_str = session.run(inp.code, inp.libraries).text
-                print("len(image_base64_str)", len(return_str))
                 code_path = DATA_PATH_DEFAULT / "run_codes" / "code.py"
                 session.copy_from_runtime(
                     src="/tmp/code.py", dest=str(code_path)
@@ -432,7 +441,10 @@ class PlotToolPanel:
                 ret_msg += "error uploading plot to osw page: " + str(e)
 
             ## link it to the documentation object:
-
+            if self.current_input_osw_id is not None:
+                input_list = [self.current_input_osw_id]
+            else:
+                input_list = None
             documentation_object = model.PythonEvaluationProcess(
                 label=[
                     model.Label(
@@ -441,7 +453,7 @@ class PlotToolPanel:
                         lang="en",
                     )
                 ],
-                input=[self.current_input_osw_id],
+                input=input_list,
                 python_evaluation_code=self.current_python_code,
                 uuid=inp.uuid,
                 output=[get_full_title(wf)],

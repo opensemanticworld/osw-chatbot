@@ -157,7 +157,7 @@ def get_file_header(inp: GetFileHeaderInput):
             lines = [next(file) for _ in range(inp.n_lines)]
         return "".join(lines)
     except Exception as e:
-        return str(e)
+        return
 
 
 class SparqlSearchFunctionInput(BaseModel):
