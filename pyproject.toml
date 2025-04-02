@@ -19,7 +19,6 @@ dependencies = [
     "osw>=0.33.0",
     "panel>=1.6.2",
     "playwright>=1.51.0",
-    "pydantic[email]>=2.11.1",
     "requests>=2.32.3",
     "ruff>=0.11.2",
     "textract-py3>=2.1.0",

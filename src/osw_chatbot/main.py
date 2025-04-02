@@ -2,6 +2,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 import panel as pn
 import param
+import warnings
+
+from pydantic import PydanticDeprecatedSince211
+warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module='pydantic')
+
 
 # going to do load_dotenv() here
 # as OLLAMA_HOST needs to be in the environment
@@ -52,7 +58,6 @@ def build_app():
     async def get_response(contents, user, instance):
         # print(contents)
         response = await agent.invoke(contents)
-        print(response)
         response_message = pn.chat.ChatMessage(
             object=response["output"],
             user="🤖 Assistant",

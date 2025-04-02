@@ -7,7 +7,11 @@ import random
 
 import langchain_core.tools
 import uuid
+import warnings
 
+from numba.core.ir import Raise
+from pydantic import PydanticDeprecatedSince211
+warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
 from osw.core import OSW, model
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from pydantic.v1 import BaseModel, Field
@@ -45,6 +49,13 @@ DATA_PATH_DEFAULT = env_path = (
     Path(__file__).parent.parent.parent.parent / "data"
 )
 
+class WebPage(BaseModel):
+    url: str
+    """The full url of the web page."""
+    title: str
+    """The title of the web page."""
+    content: str
+    """The html content of the page."""
 
 class OswFrontendPanel:
     """the class that will be handed over to OSW"""
@@ -135,12 +146,20 @@ class OswFrontendPanel:
             self.resize_callback(response)
         return response
 
+    async def where_am_i(self) -> WebPage:
+        """Returns the current window.location url, the document.title and body html of the users browser client."""
+
+        response = await self.call_client_side_tool({"type": "function_call", "name": "where_am_i", "args": []})
+        response = WebPage(**response)
+        return response
+
     def generate_langchain_tools(self) -> List[langchain_core.tools.tool]:
         """
         returns a list of langchain tools that can be called by the agent
         """
         return [  # langchain_core.tools.tool(self.multiply),
             langchain_core.tools.tool(self.redirect),
+            #langchain_core.tools.tool(self.where_am_i), # currently working in dev wiki
             # langchain_core.tools.tool(self.find_page_from_topic),
             langchain_core.tools.tool(self.create_category_instance),
             langchain_core.tools.tool(self.resize_chatwindow),
@@ -202,7 +221,8 @@ class PlotByCodeInput(BaseModel):
     )
     code: str = Field(
         ...,
-        description='The code to run. The code must save a figure as .png to  a file at "/tmp/output.png"',
+        description='The code to run. The code must save a figure as .png to  a file at "/tmp/output.png". The code '
+                    'must be utf-8 encoded. The code must be able to run in a sandboxed environment.',
     )
     file_path: Optional[str] = Field(
         default=None,
@@ -301,7 +321,7 @@ class PlotToolPanel:
         """
         Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the file_path parameter. The plot must be saved as a .png file to "/tmp/output.png"
         """
-
+        return_str = None
         with SandboxSession(
             lang="python",
             # lang=inp.lang,
@@ -313,7 +333,6 @@ class PlotToolPanel:
         ) as session:
             # Run the code in the sandbox
             try:
-                self.image_panel.object = None  ## to trigger re-plotting
                 filename = None
                 if inp.file_path is not None:
                     filename = Path(inp.file_path).name
@@ -323,26 +342,26 @@ class PlotToolPanel:
                         dest=dest_filepath,
                     )
                 return_str = session.run(inp.code, inp.libraries).text
-                print("return_str:", return_str)
+               # print("return_str:", return_str)
                 code_path = DATA_PATH_DEFAULT / "plot_codes" / "code.py"
                 session.copy_from_runtime(
                     src="/tmp/code.py", dest=str(code_path)
                 )
-                output_file_path = DATA_PATH_DEFAULT / "outputs" / "output.png"
+                self.output_file_path = DATA_PATH_DEFAULT / "outputs" / "output.png"
                 try:
                     session.copy_from_runtime(
-                        src="/tmp/output.png", dest=str(output_file_path)
+                        src="/tmp/output.png", dest=str(self.output_file_path)
                     )
                     print("successfully copied file from sandbox")
                 except Exception as e:
                     print("error copying file from sandbox. Error from here" ,  e, "String returned from sandbox: ", return_str)
                 ### check if the output file encodes an image:
-
+                # open the image to check if the file is correct.
                 Image.open(
-                    output_file_path
-                )  # open the image to check if the file is correct.
-
-                self.image_panel.object = output_file_path
+                    self.output_file_path
+                )
+                self.image_panel.object = None  ## to trigger re-plotting
+                self.image_panel.object = str(self.output_file_path)
                 self.plot_panel.clear()
                 self.plot_panel.append(self.image_panel)
                 if filename is not None:
@@ -356,12 +375,19 @@ class PlotToolPanel:
 
                 ## copy code to current Object
                 self.current_python_code = inp.code
-                return "Image successfully plotted"
+                return "Image successfully plotted, returned from sandbox: " + return_str
             except Exception as e:
+                if return_str is not None:
+                    return (
+                        "Exception during plotting: "
+                        + str(e)
+                        + "\n"
+                        + "Returned from sandbox: "
+                        + return_str
+                    )
                 return (
-                    "the script did not return a base64 encoded image, instead it returned: "
+                    "Exception during plotting: "
                     + str(e),
-                    "\ the string above is from the except case.",
                 )
 
     def run_code(self, inp: RunCodeInput) -> str:
@@ -411,7 +437,13 @@ class PlotToolPanel:
 
             ## save plot to bytesio object:
             if self.plot_panel[0] == self.image_panel:
-                bytesio = io.BytesIO(self.image_panel.object)
+                if isinstance(self.image_panel.object, str):
+                    with open(self.image_panel.object, 'rb') as file:
+                        bytesio = io.BytesIO(file.read())
+                elif isinstance(self.image_panel.object, bytes):
+                    bytesio = io.BytesIO(self.image_panel.object)
+                else:
+                    raise ValueError("No image to attach")
 
             elif self.plot_panel[0] == self.matplotlib_panel:
                 bytesio = io.BytesIO()
@@ -432,11 +464,8 @@ class PlotToolPanel:
             )
             bytesio.name = wf.title
             try:
-                wf.put(bytesio, overwrite=True)
-                ret_msg += (
-                    "plot successfully uploaded to osw page with uuid: "
-                    + str(wf.uuid)
-                )
+                wf.put(bytesio,
+                       overwrite=True)
             except Exception as e:
                 ret_msg += "error uploading plot to osw page: " + str(e)
 
@@ -464,6 +493,12 @@ class PlotToolPanel:
                     entities=[documentation_object], overwrite=True
                 )
             )
+            ret_msg += (
+                    "documentation object successfully stored: "
+                    + str(documentation_object)
+            )
+            return ret_msg
+
         except Exception as e:
             return str(e)
 
@@ -591,8 +626,8 @@ class HistoryToolAgent:
         res = await self.agent_executor.ainvoke(
             {"input": prompt, "chat_history": self.chat_history}
         )
-        print("Whole result of invoke", res)
-        print("Useful parts of result: ", res["intermediate_steps"])
+      #  print("Whole result of invoke", res)
+      #  print("Useful parts of result: ", res["intermediate_steps"])
         self.chat_history.extend(
             [
                 HumanMessage(content=prompt),
