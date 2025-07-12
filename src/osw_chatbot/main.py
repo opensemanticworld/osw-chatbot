@@ -12,6 +12,7 @@ if not env_loaded:
     print(f"No .env file found at {env_path}, using environment variables.")
 
 from osw_chatbot.toolcalling.agent import invoke
+#from osw_chatbot.websearch.interative_websearch import invoke
 
 pn.extension()
 
@@ -55,3 +56,7 @@ def build_app():
 
 if __name__ == "__main__":
     pn.serve(build_app, port=52670)
+    
+else:
+    # Run with `panel serve main.py`
+    build_app().servable()
