@@ -5,6 +5,7 @@ import json
 import random
 
 import langchain_core.tools
+from pydantic import BaseModel
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 
 
