@@ -1,0 +1,47 @@
+name: Docker Image CI (main)
+
+on:
+  push:
+    branches: [ "main" ]
+    
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  
+  schedule:
+  # Run roughly every 15 days at 00:00 UTC
+  # (useful to check if updates on dependencies break the package)
+  - cron: '0 0 1,16 * *'
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.HUB_DOCKER_COM_OPENSEMANTICWORLD_USERNAME }}
+        password: ${{ secrets.HUB_DOCKER_COM_OPENSEMANTICWORLD_PASSWORD }}
+      
+    - name: Extract metadata (tags, labels) for Docker
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: opensemanticworld/osw-chatbot
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        platforms: linux/amd64,linux/arm64
+        context: ./
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
