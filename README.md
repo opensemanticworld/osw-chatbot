@@ -19,6 +19,10 @@ https://github.com/user-attachments/assets/8f3857cd-4879-4591-9fd9-b3db0e641c7c
 https://github.com/user-attachments/assets/8760397a-3089-4758-b480-d2cee9463234
 > AI assisted form-completion based on a uploaded data sheet
 
+
+[![LLM Agentic with Code Generation for Scientific Data Analysis](http://img.youtube.com/vi/8XypKdFaxpM/0.jpg)](http://www.youtube.com/watch?v=8XypKdFaxpM "LLM Agentic with Code Generation for Scientific Data Analysis")
+> LLM Agentic with Code Generation for Scientific Data Analysis
+
 ## Run
 ```bash
 git clone https://github.com/opensemanticworld/osw-chatbot 
