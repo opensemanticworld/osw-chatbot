@@ -106,7 +106,9 @@ class OswFrontendPanel:
         return response
 
     async def redirect(self, page: str) -> str:
-        """Redicts the user to the given page title or url. A page title must contain the namespace (e.g. 'Category:' or 'Item:'). Returns 'accepted' if the redirect was successful, else 'rejected'."""
+        """Redicts the user to the given page title or url.
+        A page title must contain the namespace (e.g. 'Category:' or 'Item:').
+        Returns 'accepted' if the redirect was successful, else 'rejected'."""
 
         response = await self.call_client_side_tool(
             {"type": "function_call", "name": "redirect", "args": [page]}
@@ -127,7 +129,8 @@ class OswFrontendPanel:
         return response
 
     async def create_category_instance(self, category_page) -> str:
-        """Opens an editor to create an instance for the given category page. Returns 'success' if the editor was opened, else 'failure'."""
+        """Opens an editor to create an instance for the given category page.
+        Returns 'success' if the editor was opened, else 'failure'."""
         response = await self.call_client_side_tool(
             {
                 "type": "function_call",
@@ -159,7 +162,7 @@ class OswFrontendPanel:
         """
         return [  # langchain_core.tools.tool(self.multiply),
             langchain_core.tools.tool(self.redirect),
-            #langchain_core.tools.tool(self.where_am_i), # currently working in dev wiki
+            langchain_core.tools.tool(self.where_am_i), # currently working in dev wiki
             # langchain_core.tools.tool(self.find_page_from_topic),
             langchain_core.tools.tool(self.create_category_instance),
             langchain_core.tools.tool(self.resize_chatwindow),
@@ -319,7 +322,9 @@ class PlotToolPanel:
 
     def plot_by_code(self, inp: PlotByCodeInput) -> str:
         """
-        Run code in a sandboxed environment. If files are needed they can be copied to the sandbox with the file_path parameter. The plot must be saved as a .png file to "/tmp/output.png"
+        Run code in a sandboxed environment. If files are needed they can be copied
+        to the sandbox with the file_path parameter.
+        The plot must be saved as a .png file to "/tmp/output.png"
         """
         return_str = None
         with SandboxSession(
@@ -597,7 +602,9 @@ class HistoryToolAgent:
                 [
                     (
                         "system",
-                        "You are a helpful assistant. If the user wants to create something first try to find the category page for the given topic/keyword the user metions. Then create the instance.",
+                        "You are a helpful assistant. If the user wants to create"
+                        " something first try to find the category page for the given "
+                        "topic/keyword the user metions. Then create the instance.",
                     ),
                     ("placeholder", "{chat_history}"),
                     ("human", "{input}"),
@@ -620,20 +627,15 @@ class HistoryToolAgent:
         self.chat_history = []
 
     async def invoke(self, prompt):
-        # return graph.invoke({"question": prompt})
-        # return tools_llm.invoke(prompt)
-        # return agent_executor.invoke({"input": prompt})
         res = await self.agent_executor.ainvoke(
             {"input": prompt, "chat_history": self.chat_history}
         )
-      #  print("Whole result of invoke", res)
-      #  print("Useful parts of result: ", res["intermediate_steps"])
         self.chat_history.extend(
             [
                 HumanMessage(content=prompt),
                 str(
                     res["intermediate_steps"]
-                ),  ## TODO: find proper Type for intermediate steps
+                ),
                 AIMessage(content=res["output"]),
             ]
         )

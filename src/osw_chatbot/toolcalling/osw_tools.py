@@ -160,13 +160,6 @@ def get_file_header(inp: GetFileHeaderInput):
         return
 
 
-class SparqlSearchFunctionInput(BaseModel):
-    search_string: str = Field(
-        ...,
-        description="The search string to look for. All words inside the search string must be contained in the "
-                    "normalized label.",
-    )
-
 
 def check_for_uuid(input_str):
     pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -187,6 +180,12 @@ def try_cast_str_to_uuid(input_str):
         return uuid
     return None
 
+class SparqlSearchFunctionInput(BaseModel):
+    search_string: str = Field(
+        ...,
+        description="The search string to look for. All words inside the search string must be contained in the "
+                    "normalized label.",
+    )
 
 @tool
 def sparql_search_function(inp: SparqlSearchFunctionInput):
@@ -278,14 +277,9 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
     """Get all properties of an OSW element. This can be used to further explore the element and find out more about it.
     returns the result of a sparql query going through all properties of the given element in a star shape in the
     given depth"""
-    # print(inp)
-    # print(inp.osw_id)
 
     sparql_url = os.environ.get("BLAZEGRAPH_ENDPOINT")
-
-    osw_id = inp.osw_id.split(":")[-1].split(".")[
-        0
-    ]  ## second split: get rid of file ending e.g. .csv
+    osw_id = inp.osw_id.split(":")[-1].split(".")[0]  ## second split: get rid of file ending e.g. .csv
     my_uuid = str(UUID(osw_id.replace("OSW", "")))
     sparql_query = (
         """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
@@ -416,7 +410,6 @@ class GetInstancesInput(BaseModel):
     max_number: int = Field(
         10, description="The maximum number of instances to be fetched"
     )
-
 
 @tool
 def get_instances(inp: GetInstancesInput):

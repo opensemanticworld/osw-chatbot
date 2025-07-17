@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 import panel as pn
 import param
 import warnings
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
 
 from pydantic import PydanticDeprecatedSince211
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
@@ -29,45 +31,48 @@ pn.extension()
 
 pn.config.theme = "dark"
 
+## initialize out of build_app to avoid re-initialization on every app build
+plot_tool_panel = PlotToolPanel()
+# frontend_panel = OswFrontendPanel(child_panels=[plot_tool_panel])
+frontend_panel = OswFrontendPanel()
+tools = [
+    *plot_tool_panel.generate_langchain_tools(),
+    *frontend_panel.generate_langchain_tools(),
+    osw_tools.get_page_html,
+    osw_tools.download_osl_file,
+    osw_tools.get_instances,
+    osw_tools.sparql_search_function,
+    osw_tools.get_topic_taxonomy,
+    osw_tools.find_out_everything_about,
+    osw_tools.get_website_html,
+    osw_tools.get_file_header,
+]
+
+agent = HistoryToolAgent(tools=tools)
+
+style_chat = """
+.left {
+    display: none !important;
+}
+"""
+
+async def get_response(contents, user, instance):
+    # print(contents)
+    response = await agent.invoke(contents)
+    response_message = pn.chat.ChatMessage(
+        object=response["output"],
+        user="🤖 Assistant",
+        show_edit_icon=False,
+        show_timestamp=False,
+        show_reaction_icons=False,
+        stylesheets=[style_chat],
+    )
+    return response_message  # ["answer"]
+
+
+
 
 def build_app():
-    plot_tool_panel = PlotToolPanel()
-    # frontend_panel = OswFrontendPanel(child_panels=[plot_tool_panel])
-    frontend_panel = OswFrontendPanel()
-    tools = [
-        *plot_tool_panel.generate_langchain_tools(),
-        *frontend_panel.generate_langchain_tools(),
-        osw_tools.get_page_html,
-        osw_tools.download_osl_file,
-        osw_tools.get_instances,
-        osw_tools.sparql_search_function,
-        osw_tools.get_topic_taxonomy,
-        osw_tools.find_out_everything_about,
-        osw_tools.get_website_html,
-        osw_tools.get_file_header,
-    ]
-
-    agent = HistoryToolAgent(tools=tools)
-
-    style_chat = """
-    .left {
-        display: none !important;
-    }
-    """
-
-    async def get_response(contents, user, instance):
-        # print(contents)
-        response = await agent.invoke(contents)
-        response_message = pn.chat.ChatMessage(
-            object=response["output"],
-            user="🤖 Assistant",
-            show_edit_icon=False,
-            show_timestamp=False,
-            show_reaction_icons=False,
-            stylesheets=[style_chat],
-        )
-        return response_message  # ["answer"]
-
     chat_bot = pn.chat.ChatInterface(
         callback=get_response,
         # max_width=500,
@@ -89,6 +94,29 @@ def build_app():
             "stylesheets": [style_chat]
         },  # additional params for ChatMessage of user
     )
+
+    for message in agent.chat_history:
+        if isinstance(message, AIMessage):
+            chat_bot.send(
+                value=message.content,
+                user="🤖 Assistant",
+                show_edit_icon=False,
+                show_timestamp=False,
+                show_reaction_icons=False,
+                stylesheets=[style_chat],
+                respond=False
+            )
+        if isinstance(message, HumanMessage):
+            chat_bot.send(
+                value = message.content,
+                user="🧑 User",
+                show_edit_icon=False,
+                show_timestamp=False,
+                show_reaction_icons=False,
+                stylesheets=[style_chat],
+                respond=False
+            )
+
     terminal_mirror = TerminalMirrorPanel()
 
     # Responsive Layout with CSS Grid and Media Queries
@@ -143,17 +171,18 @@ def build_app():
     )
     # app = pn.FlexBox(red, green, blue, stylesheets=[media_query]).servable()
 
-    chat_message = pn.chat.ChatMessage(
-        object="How can I help you?",
-        user="🤖 Assistant",
-        show_edit_icon=False,
-        show_timestamp=False,
-        show_reaction_icons=False,
-        stylesheets=[style_chat],
-    )
+    if len(agent.chat_history)<1:
+        chat_message = pn.chat.ChatMessage(
+            object="How can I help you?",
+            user="🤖 Assistant",
+            show_edit_icon=False,
+            show_timestamp=False,
+            show_reaction_icons=False,
+            stylesheets=[style_chat],
+        )
 
     # chat_bot.send("what's on your mind?", user="Assistant", respond=False)
-    chat_bot.send(value=chat_message, respond=False)
+        chat_bot.send(value=chat_message, respond=False)
     # chat_bot.send(
     #     "Search for a page that has a .csv file attachend, enshure to remember the path of the page, download it, and then plot it. Please show also the URL of the page where the file is located.",
     #     user="User",
