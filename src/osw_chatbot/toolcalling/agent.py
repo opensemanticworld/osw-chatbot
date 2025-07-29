@@ -435,7 +435,7 @@ class PlotToolPanel:
 
         ret_msg = ""
         try:
-            osw_obj = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
+            osw_obj = OswExpress(domain="demo.open-semantic-lab.org")
 
             ## upload the image and attach it as output
             # upload the image:
@@ -515,7 +515,7 @@ class PlotToolPanel:
         try:
             ## get the page object where the plot should be attached
 
-            osw_obj = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
+            osw_obj = OswExpress(domain="demo.open-semantic-lab.org")
             title = inp.osw_id
             entity = osw_obj.load_entity(title)
             if entity is None:

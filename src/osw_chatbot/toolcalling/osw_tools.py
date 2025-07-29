@@ -17,7 +17,7 @@ from uuid import UUID
 import re
 import pandas as pd
 
-osw = OswExpress(domain="mat-o-lab.open-semantic-lab.org")
+osw = OswExpress(domain="demo.open-semantic-lab.org")
 
 
 class GetPageHtmlInput(BaseModel):
@@ -70,7 +70,7 @@ def download_osl_file(inp: DownlaodOslFileInput):
 
         print("downloading ", inp.osw_id)
         local_file = osw_download_file(
-            "https://mat-o-lab.open-semantic-lab.org/wiki/" + inp.osw_id,
+            "https://demo.open-semantic-lab.org/wiki/" + inp.osw_id,
             # , use_cached=True
             overwrite=True,
         )
@@ -93,11 +93,11 @@ def download_osl_file(inp: DownlaodOslFileInput):
 ## Sparql query that gets all unidirectional paths between two nodes
 """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
-        PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-        PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-        PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-        PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-        PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+        PREFIX osl: <https://demo.open-semantic-lab.org/id/>
+        PREFIX Property: <https://demo.open-semantic-lab.org/id/Property-3A>
+        PREFIX File: <https://demo.open-semantic-lab.org/id/File-3A>
+        PREFIX Category: <https://demo.open-semantic-lab.org/id/Category-3A>
+        PREFIX Item: <https://demo.open-semantic-lab.org/id/Item-3A>
 
         SELECT DISTINCT #?node1 
 						#?node2 
@@ -127,8 +127,8 @@ def download_osl_file(inp: DownlaodOslFileInput):
           ?x Property:HasName ?x_label .
           ?y Property:HasName ?y_label .
           
-          ?label1 <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext1.
-          ?label2 <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext2.
+          ?label1 <https://demo.open-semantic-lab.org/id/Property-3AText> ?labeltext1.
+          ?label2 <https://demo.open-semantic-lab.org/id/Property-3AText> ?labeltext2.
           
           FILTER(?uuid1 = "a5fd64a4-e26e-4b7d-abdb-b8c0db83ddd6")  # Matthias Albert Popp
           #FILTER(?uuid1 = "b3a52473-87d0-4385-95e7-ecdda1f6b1af")  # Robin Pfeiffer
@@ -136,7 +136,7 @@ def download_osl_file(inp: DownlaodOslFileInput):
           FILTER(?uuid2 = "4240d9f1-cbe6-45bd-b932-0868584f7071") # Item
    #       FILTER(?uuid2 = "82ee4dd0-696b-4fc5-9afd-643ea6f7c10c") # Rene Wickmann
 		  FILTER(?p != 	<http://semantic-mediawiki.org/swivt/1.0#masterPage>)
-          FILTER(?p != 	<https://mat-o-lab.open-semantic-lab.org/id/Property-3AHas_query>)
+          FILTER(?p != 	<https://demo.open-semantic-lab.org/id/Property-3AHas_query>)
           }"""
 
 
@@ -201,17 +201,17 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
         sparql_query = (
             """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
-        PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-        PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-        PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-        PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-        PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+        PREFIX osl: <https://demo.open-semantic-lab.org/id/>
+        PREFIX Property: <https://demo.open-semantic-lab.org/id/Property-3A>
+        PREFIX File: <https://demo.open-semantic-lab.org/id/File-3A>
+        PREFIX Category: <https://demo.open-semantic-lab.org/id/Category-3A>
+        PREFIX Item: <https://demo.open-semantic-lab.org/id/Item-3A>
 
         SELECT DISTINCT ?node ?label ?labeltext ?osw_id ?uuid
         WHERE {
           ?node Property:HasUuid ?uuid .
           ?node Property:HasNormalizedLabel ?label .
-          ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext.
+          ?label <https://demo.open-semantic-lab.org/id/Property-3AText> ?labeltext.
           
           ?node Property:HasOswId ?osw_id.
           FILTER(?uuid = \""""
@@ -232,16 +232,16 @@ def sparql_search_function(inp: SparqlSearchFunctionInput):
         sparql_query = (
             """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
     PREFIX owl: <http://www.w3.org/2002/07/owl#>
-    PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-    PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-    PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-    PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-    PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+    PREFIX osl: <https://demo.open-semantic-lab.org/id/>
+    PREFIX Property: <https://demo.open-semantic-lab.org/id/Property-3A>
+    PREFIX File: <https://demo.open-semantic-lab.org/id/File-3A>
+    PREFIX Category: <https://demo.open-semantic-lab.org/id/Category-3A>
+    PREFIX Item: <https://demo.open-semantic-lab.org/id/Item-3A>
     
     SELECT DISTINCT ?node ?label ?labeltext ?osw_id
     WHERE {
       ?node Property:HasNormalizedLabel ?label .
-      ?label <https://mat-o-lab.open-semantic-lab.org/id/Property-3AText> ?labeltext
+      ?label <https://demo.open-semantic-lab.org/id/Property-3AText> ?labeltext
              """
             + filter_string
             + """
@@ -284,11 +284,11 @@ def find_out_everything_about(inp: FindOutEverythingAboutInput):
     sparql_query = (
         """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
-        PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-        PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-        PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-        PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-		PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+        PREFIX osl: <https://demo.open-semantic-lab.org/id/>
+        PREFIX Property: <https://demo.open-semantic-lab.org/id/Property-3A>
+        PREFIX File: <https://demo.open-semantic-lab.org/id/File-3A>
+        PREFIX Category: <https://demo.open-semantic-lab.org/id/Category-3A>
+		PREFIX Item: <https://demo.open-semantic-lab.org/id/Item-3A>
 
         SELECT DISTINCT ?s ?p ?o ?s_label ?p_label ?o_label
         WHERE{
@@ -358,11 +358,11 @@ def get_topic_taxonomy(inp: GetTopicTaxonomyInput):
     sparql_query = (
         """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX owl: <http://www.w3.org/2002/07/owl#>
-        PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-        PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-        PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-        PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-		PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+        PREFIX osl: <https://demo.open-semantic-lab.org/id/>
+        PREFIX Property: <https://demo.open-semantic-lab.org/id/Property-3A>
+        PREFIX File: <https://demo.open-semantic-lab.org/id/File-3A>
+        PREFIX Category: <https://demo.open-semantic-lab.org/id/Category-3A>
+		PREFIX Item: <https://demo.open-semantic-lab.org/id/Item-3A>
 
         SELECT DISTINCT ?s_label ?p ?p_label ?o ?o_label ?s_id ?o_id
         WHERE{
@@ -426,11 +426,11 @@ def get_instances(inp: GetInstancesInput):
         sparql_query = (
             """PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
             PREFIX owl: <http://www.w3.org/2002/07/owl#>
-            PREFIX osl: <https://mat-o-lab.open-semantic-lab.org/id/>
-            PREFIX Property: <https://mat-o-lab.open-semantic-lab.org/id/Property-3A>
-            PREFIX File: <https://mat-o-lab.open-semantic-lab.org/id/File-3A>
-            PREFIX Category: <https://mat-o-lab.open-semantic-lab.org/id/Category-3A>
-            PREFIX Item: <https://mat-o-lab.open-semantic-lab.org/id/Item-3A>
+            PREFIX osl: <https://demo.open-semantic-lab.org/id/>
+            PREFIX Property: <https://demo.open-semantic-lab.org/id/Property-3A>
+            PREFIX File: <https://demo.open-semantic-lab.org/id/File-3A>
+            PREFIX Category: <https://demo.open-semantic-lab.org/id/Category-3A>
+            PREFIX Item: <https://demo.open-semantic-lab.org/id/Item-3A>
 
             SELECT DISTINCT ?s_label ?p ?p_label ?o ?o_label ?s_id ?o_id
             WHERE{
