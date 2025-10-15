@@ -14,7 +14,7 @@ from osw_chatbot.llm import llm, embeddings
 
 from langchain_core.vectorstores import InMemoryVectorStore
 
-from osw_chatbot.structured_output.util import file_url_to_text
+from osw_chatbot.structured_output.util import file_url_to_text, multimedia_file_url_to_text
 
 vector_store = InMemoryVectorStore(embeddings)
 
@@ -169,6 +169,11 @@ async def simple_browse_web_page(param: SimpleBrowseWebPageParam) -> SimpleBrows
         text = file_url_to_text(param.url)
         return SimpleBrowseWebPageResult(text=text)
     
+    # generate image description
+    if param.url.split(".")[-1] in ["jpg", "jpeg", "png", "gif", "bmp", "tiff"]:
+        text = await multimedia_file_url_to_text(param.url)
+        return SimpleBrowseWebPageResult(text=text)
+    
     browser_config = BrowserConfig(headless=True, accept_downloads=False)#,browser_type="firefox")  # Default browser configuration
     run_config = CrawlerRunConfig()   # Default crawl run configuration
 
@@ -288,6 +293,7 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
 async def simple_browse_web_page_tool(param: SimpleBrowseWebPageParam) -> SimpleBrowseWebPageResult:
     """Loads the given web page and returns the text content and links.
     Links can be followed to learn more about specific topics.
+    Links can also be files (pdf, docx, xlsx, pptx, etc.) that are downloaded and their content extracted.
     """
     return await simple_browse_web_page(param)
 

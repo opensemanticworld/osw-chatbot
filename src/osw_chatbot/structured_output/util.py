@@ -4,6 +4,8 @@ import json
 import copy
 from copy import deepcopy
 
+import httpx
+
 def is_object(item):
     return item is not None and isinstance(item, dict)
 
@@ -138,6 +140,89 @@ from textract import process
 import tempfile
 import urllib.request
 from pprint import pprint
+from osw_chatbot.llm import llm
+
+from langchain_core.messages import HumanMessage
+
+async def multimedia_data_url_to_text(data_url):
+    
+    message = HumanMessage(
+        content=[
+            {
+                "type": "text",
+                "text": "Describe this image"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    #"url": f"data:image/jpeg;base64,{base64_image}"
+                    "url": f"{data_url}"
+                }
+            }
+        ]
+    )
+
+    response = await llm.ainvoke([message])
+    return response.content
+
+async def multimedia_file_url_to_text(file_url):
+    image_data = base64.b64encode(httpx.get(file_url).content).decode("utf-8")
+    message = HumanMessage(
+        content=[
+            {
+                "type": "text",
+                "text": "Describe this image"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_data}"
+                }
+            }
+        ]
+    )
+
+    response = await llm.ainvoke([message])
+    return response.content
+
+def multimedia_data_url_to_text_sync(data_url):
+    message = HumanMessage(
+        content=[
+            {
+                "type": "text",
+                "text": "Describe this image"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"{data_url}"
+                }
+            }
+        ]
+    )
+
+    response = llm.invoke([message])
+    return response.content
+
+def multimedia_file_url_to_text_sync(file_url):
+    image_data = base64.b64encode(httpx.get(file_url).content).decode("utf-8")
+    message = HumanMessage(
+        content=[
+            {
+                "type": "text",
+                "text": "Describe this image"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_data}"
+                }
+            }
+        ]
+    )
+
+    response = llm.invoke([message])
+    return response.content
 
 def data_url_to_text(file_name, data_url):
     response = urllib.request.urlopen(data_url)

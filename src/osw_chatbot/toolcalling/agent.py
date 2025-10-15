@@ -17,6 +17,7 @@ from osw_chatbot.llm import llm, embeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 
 from osw_chatbot.structured_output.llm import get_llm_response_azure_openai
+from osw_chatbot.structured_output.util import multimedia_data_url_to_text
 from osw_chatbot.websearch.interative_websearch import tools as websearch_tools
 from osw_chatbot.websearch.interative_websearch import invoke as websearch_invoke
 
@@ -56,13 +57,22 @@ class WebPage(BaseModel):
     """The title of the web page."""
     content: str
     """The html content of the page."""
+    user: Dict[str, str]
+    """The user object with id and name of the current user."""
 
 @langchain_core.tools.tool
 async def where_am_i() -> WebPage:
-    """Returns the current window.location url, the document.title and body html of the users browser client."""
+    """Returns the current user (id and name), the window.location url, the document.title and body html of the users browser client."""
     
     response = await call_client_side_tool({"type": "function_call", "name": "where_am_i", "args": []})
     response = WebPage(**response)
+    return response
+
+@langchain_core.tools.tool
+async def highlight_html_element(x_path) -> str:
+    """Hihglights the html element with the given x_path. Returns 'success' if the element was found and highlighted, else 'failure'."""
+    
+    response = await call_client_side_tool({"type": "function_call", "name": "highlight_html_element", "args": [x_path]})
     return response
 
 @langchain_core.tools.tool
@@ -90,10 +100,13 @@ async def find_page_from_topic(topic) -> List[Dict[str, str]]:
     return response
 
 @langchain_core.tools.tool
-async def get_page_content(titles) -> dict:
+async def get_page_content(titles: List[str], include_html: bool) -> dict:
     """Gets the content of one or multiple pages by their title. A page title must contain the namespace (e.g. 'Category:' or 'Item:').
+    The structured content and wikitext source is also returned.
+    If include_html is true the html content of the page also returned. This is more expensive but may also contain aggregated content from other pages, 
+    e.g. if the page contains a overview list.
     """
-    response = await call_client_side_tool({"type": "function_call", "name": "get_page_content", "args": [titles]})
+    response = await call_client_side_tool({"type": "function_call", "name": "get_page_content", "args": [titles, include_html]})
     return response
 
 @langchain_core.tools.tool
@@ -133,7 +146,39 @@ async def smw_ask_query(query) -> dict:
     response = await call_client_side_tool({"type": "function_call", "name": "smw_ask_query", "args": [query]})
     return response
 
-tools = [multiply, where_am_i, redirect, full_text_search, create_category_instance, get_page_content, smw_ask_query]
+@langchain_core.tools.tool
+async def get_file_content(file_title) -> str:
+    """Gets the content of a wiki file by its title (File:OSW...). Can handle images and documents.
+    Important: Use this function only for file in the current wiki domain, not for external urls retrieved via web search!
+    For file links from web search use the web search tool to get the content.
+    """
+    response = await call_client_side_tool({"type": "function_call", "name": "get_file_data_url", "args": [file_title]})
+    result = response
+
+    # result is a data_url, e.g. data:/plain;base64,....
+    
+    # for images, generate a description
+    if result.startswith("data:image/"):
+        text = await multimedia_data_url_to_text(result)
+    
+    else:
+        # use textract to extract the text content
+        from osw_chatbot.structured_output.util import data_url_to_text
+        text = data_url_to_text(file_title, result)
+    
+    return text
+
+tools = [
+    multiply,
+    where_am_i,
+    highlight_html_element,
+    redirect,
+    full_text_search,
+    create_category_instance,
+    get_page_content,
+    smw_ask_query,
+    get_file_content,
+]
 # enable web search
 tools.extend(websearch_tools)
 
@@ -145,7 +190,7 @@ prompt = ChatPromptTemplate.from_messages(
                 "You are a helpful assistant called 'EVE' that guides a user on a wiki-like website based on OpenSemanticLab. If the user wants to create something first try to find the category page for the given topic/keyword the user metions. Then create the instance. "
                 "If the user asks something about the current page or the website in general, analyse the situation with the 'where_am_i' tool and guide him afterwards."
                 "If the user does not provide a context assume that he's referring to the current page or the website as a whole."
-                "If you provide links, format them directly in your response, always with anchor attribute target=\"_blank\". In particular link OSW-IDs, e.g. Item:OSW123... with https://<wiki-domain>/wiki/Item:OSW123... and the page label as link text."
+                "If you provide links, format them directly as html anchor elements in your response, always with attribute target=\"_blank\". In particular link OSW-IDs, e.g. Item:OSW123... with https://<wiki-domain>/wiki/Item:OSW123... and the page label as link text."
                 "For mailto links use semicolons to separate multiple email addresses."
             ),
         ),
