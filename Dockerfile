@@ -1,5 +1,5 @@
 #
-FROM python:3.11
+FROM python:3.11-bookworm
 
 # virtual display for web browser if HEADLESS==false
 RUN apt-get update && apt-get upgrade -y \
