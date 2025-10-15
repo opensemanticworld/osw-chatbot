@@ -33,7 +33,6 @@ def get_llm_response_azure_openai(promt, schema_dict = None, data_dict = None, f
 
     # Payload for the request
     payload = {
-        "model": "gpt-4o",
         "messages": [
             {
                 "role": "user", 

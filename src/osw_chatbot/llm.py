@@ -8,7 +8,7 @@ llm = AzureChatOpenAI(
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
     #azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
     api_version=os.environ["AZURE_OPENAI_API_VERSION"],
-    model="gpt-4o-2024-08-06",
+    model=os.environ["AZURE_OPENAI_MODEL"],
     cache=SQLiteCache("openai_cache.db"),
 )
 
