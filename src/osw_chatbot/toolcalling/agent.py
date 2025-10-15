@@ -73,11 +73,27 @@ async def redirect(page: str) -> str:
     return response
 
 @langchain_core.tools.tool
+async def full_text_search(query) -> str:
+    """Finds a pages by running a full text search in the indexed content (title, description, content). Returns a html list.
+    Anchor links contain the page title (title attribute) that can be used to load the page with the get_page_content tool.
+    Anchor links also contain the human label as inner text.
+    """
+    response = await call_client_side_tool({"type": "function_call", "name": "full_text_search", "args": [query]})
+    return response
+
+@langchain_core.tools.tool
 async def find_page_from_topic(topic) -> List[Dict[str, str]]:
     """Finds a page for a given topic for searching titles were the topic is contained in the label.
     Returns a list of results with title, description and type
     """
     response = await call_client_side_tool({"type": "function_call", "name": "find_page_from_topic", "args": [topic]})
+    return response
+
+@langchain_core.tools.tool
+async def get_page_content(titles) -> dict:
+    """Gets the content of one or multiple pages by their title. A page title must contain the namespace (e.g. 'Category:' or 'Item:').
+    """
+    response = await call_client_side_tool({"type": "function_call", "name": "get_page_content", "args": [titles]})
     return response
 
 @langchain_core.tools.tool
@@ -108,7 +124,16 @@ async def create_category_instance(category_page: str, instance_description: Opt
     response = await call_client_side_tool({"type": "function_call", "name": "create_category_instance", "args": [category_page, default_data]})
     return response
 
-tools = [multiply, where_am_i, redirect, find_page_from_topic, create_category_instance]
+@langchain_core.tools.tool
+async def smw_ask_query(query) -> dict:
+    """Runs a Semantic Mediawiki Ask API Query, e.g. to get all pages in a category with their properties. 
+    Param `query` is only the query string with the select / filter conditions, no other parameters.
+    To get existing SMW properties consult the categories schema with the get_category_schema tool.
+    """
+    response = await call_client_side_tool({"type": "function_call", "name": "smw_ask_query", "args": [query]})
+    return response
+
+tools = [multiply, where_am_i, redirect, full_text_search, create_category_instance, get_page_content, smw_ask_query]
 # enable web search
 tools.extend(websearch_tools)
 
@@ -116,7 +141,13 @@ prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a helpful assistant. If the user wants to create something first try to find the category page for the given topic/keyword the user metions. Then create the instance.",
+            (
+                "You are a helpful assistant called 'EVE' that guides a user on a wiki-like website based on OpenSemanticLab. If the user wants to create something first try to find the category page for the given topic/keyword the user metions. Then create the instance. "
+                "If the user asks something about the current page or the website in general, analyse the situation with the 'where_am_i' tool and guide him afterwards."
+                "If the user does not provide a context assume that he's referring to the current page or the website as a whole."
+                "If you provide links, format them directly in your response, always with anchor attribute target=\"_blank\". In particular link OSW-IDs, e.g. Item:OSW123... with https://<wiki-domain>/wiki/Item:OSW123... and the page label as link text."
+                "For mailto links use semicolons to separate multiple email addresses."
+            ),
         ),
         ("placeholder", "{chat_history}"),
         ("human", "{input}"),
