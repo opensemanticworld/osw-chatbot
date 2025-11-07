@@ -57,7 +57,7 @@ class WebPage(BaseModel):
     """The title of the web page."""
     content: str
     """The html content of the page."""
-    user: Dict[str, str]
+    user: Optional[Dict[str, str]]
     """The user object with id and name of the current user."""
 
 @langchain_core.tools.tool
