@@ -4,7 +4,7 @@ import json
 import numpy as np
 
 import random
-
+import os
 import langchain_core.tools
 import uuid
 import warnings
@@ -435,7 +435,7 @@ class PlotToolPanel:
 
         ret_msg = ""
         try:
-            osw_obj = OswExpress(domain="demo.open-semantic-lab.org")
+            osw_obj = OswExpress(domain=os.environ.get("OSW_DOMAIN"))
 
             ## upload the image and attach it as output
             # upload the image:
@@ -515,7 +515,7 @@ class PlotToolPanel:
         try:
             ## get the page object where the plot should be attached
 
-            osw_obj = OswExpress(domain="demo.open-semantic-lab.org")
+            osw_obj = OswExpress(os.environ.get("OSW_DOMAIN"))
             title = inp.osw_id
             entity = osw_obj.load_entity(title)
             if entity is None:
