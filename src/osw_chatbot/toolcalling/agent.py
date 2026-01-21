@@ -346,7 +346,7 @@ class PlotToolPanel:
                         src=inp.file_path,
                         dest=dest_filepath,
                     )
-                return_str = session.run(inp.code, inp.libraries).text
+                return_str = session.run(inp.code, inp.libraries).stdout
                # print("return_str:", return_str)
                 code_path = DATA_PATH_DEFAULT / "plot_codes" / "code.py"
                 session.copy_from_runtime(
