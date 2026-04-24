@@ -16,7 +16,7 @@ dependencies = [
     "langchain-text-splitters>=0.3.6",
     "langgraph>=0.3.14",
     "llm-sandbox[docker]>=0.2.3",
-    "osw==0.33.0",
+    "osw==1.0.1",
     "panel>=1.6.2",
     "playwright>=1.51.0",
     "requests>=2.32.3",

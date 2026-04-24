@@ -30,7 +30,7 @@ from osw.controller.file.local import LocalFileController
 from osw.controller.file.wiki import WikiFileController
 from osw.utils.wiki import get_full_title
 
-from osw.express import osw_upload_file, OswExpress
+from osw.express import osw_upload_file, OswExpress, default_paths
 
 import langchain_core
 
@@ -48,6 +48,58 @@ from langchain_core.prompts import ChatPromptTemplate
 DATA_PATH_DEFAULT = env_path = (
     Path(__file__).parent.parent.parent.parent / "data"
 )
+
+def _resolve_file_path(file_path: str) -> str:
+    """Resolve a file path that may be just a filename to its full host path."""
+    p = Path(file_path)
+    if p.is_absolute() and p.exists():
+        return str(p)
+    candidate = default_paths.download_dir / p.name
+    if candidate.exists():
+        return str(candidate)
+    candidate = DATA_PATH_DEFAULT / p.name
+    if candidate.exists():
+        return str(candidate)
+    return file_path
+
+
+_MICRESS_BIN_EXTS = {".conc1", ".conc2", ".concc", ".phas", ".temp", ".vel"}
+_MICRESS_GEO_EXTS = {".geof", ".geof1"}
+
+
+def _copy_files_to_sandbox(session, file_paths: List[str]) -> List[str]:
+    """Copy files into the sandbox, renaming geometry files to match binary
+    files so that micpy auto-detects geometry."""
+    resolved_paths = [_resolve_file_path(fp) for fp in file_paths]
+
+    bin_stem = None
+    geo_src = None
+    non_geo = []
+
+    for rp in resolved_paths:
+        suffix = Path(rp).suffix.lower()
+        if suffix in _MICRESS_GEO_EXTS:
+            geo_src = rp
+        else:
+            if suffix in _MICRESS_BIN_EXTS:
+                bin_stem = Path(rp).stem
+            non_geo.append(rp)
+
+    filenames = []
+    for rp in non_geo:
+        name = Path(rp).name
+        session.copy_to_runtime(src=rp, dest="/sandbox/" + name)
+        filenames.append(name)
+
+    if geo_src is not None:
+        if bin_stem is not None:
+            geo_name = bin_stem + ".geoF"
+        else:
+            geo_name = Path(geo_src).name
+        session.copy_to_runtime(src=geo_src, dest="/sandbox/" + geo_name)
+        filenames.append(geo_name)
+
+    return filenames
 
 class WebPage(BaseModel):
     url: str
@@ -224,20 +276,23 @@ class PlotByCodeInput(BaseModel):
     )
     code: str = Field(
         ...,
-        description='The code to run. The code must save a figure as .png to  a file at "/tmp/output.png". The code '
+        description='The code to run. The code must save a figure as .png to a file at "/sandbox/output.png". The code '
                     'must be utf-8 encoded. The code must be able to run in a sandboxed environment.',
     )
-    file_path: Optional[str] = Field(
+    file_paths: Optional[List[str]] = Field(
         default=None,
-        description="The path to a file that can be used within the "
-        "script. The path from within the script must be "
-        "'/sandbox/<FILENAME>' where <FILENAME> can be "
-        "extracted from from the <file_path>",
+        description="List of file paths to copy into the sandbox before running "
+        "the code. Each file will be available at '/sandbox/<FILENAME>' "
+        "where <FILENAME> is the basename of the path. Accepts full host "
+        "paths or just filenames (resolved from the downloads directory).",
     )
     libraries: Optional[List[str]] = Field(
         default=["numpy", "pandas", "matplotlib", "scipy"],
         description=(
-            "The libraries to use. Only change if more than default is needed."
+            "List of pip packages to install in the sandbox before running the code. "
+            "The defaults are numpy, pandas, matplotlib, scipy. Add any additional "
+            "packages the code needs (e.g. 'micress-micpy', 'seaborn', 'scikit-learn'). "
+            "Note: the pip package name may differ from the Python import name."
         ),
     )
 
@@ -250,19 +305,21 @@ class RunCodeInput(BaseModel):
         ...,
         description="The code to run. Whatever is printed will be returned.",
     )
-    file_path: Optional[str] = Field(
+    file_paths: Optional[List[str]] = Field(
         default=None,
-        description="The path to a file that can be used within the "
-        "script. The path from within the script must be "
-        "'/sandbox/<FILENAME>' where <FILENAME> can be "
-        "extracted from from the <file_path>",
+        description="List of file paths to copy into the sandbox before running "
+        "the code. Each file will be available at '/sandbox/<FILENAME>' "
+        "where <FILENAME> is the basename of the path. Accepts full host "
+        "paths or just filenames (resolved from the downloads directory).",
     )
     libraries: Optional[List[str]] = Field(
         default=["numpy", "pandas", "matplotlib", "scipy"],
-        description="The libraries to use. Only change if more than default is needed.",
-    )
-    file_type: Optional[str] = Field(
-        default=None, description="The type of the file to use from filepath."
+        description=(
+            "List of pip packages to install in the sandbox before running the code. "
+            "The defaults are numpy, pandas, matplotlib, scipy. Add any additional "
+            "packages the code needs (e.g. 'micress-micpy', 'seaborn', 'scikit-learn'). "
+            "Note: the pip package name may differ from the Python import name."
+        ),
     )
 
 
@@ -324,42 +381,27 @@ class PlotToolPanel:
         """
         Run code in a sandboxed environment. If files are needed they can be copied
         to the sandbox with the file_path parameter.
-        The plot must be saved as a .png file to "/tmp/output.png"
+        The plot must be saved as a .png file to "/sandbox/output.png"
         """
         return_str = None
         with SandboxSession(
             lang="python",
-            # lang=inp.lang,
-            libraries=inp.libraries,
             image="python:3.12-slim",
-            # dockerfile=DOCKERFILE_SANDBOX_PATH,
-            # verbose=True,
             keep_template=True,
         ) as session:
-            # Run the code in the sandbox
             try:
-                filename = None
-                if inp.file_path is not None:
-                    filename = Path(inp.file_path).name
-                    dest_filepath = "/sandbox/" + filename
-                    session.copy_to_runtime(
-                        src=inp.file_path,
-                        dest=dest_filepath,
-                    )
+                filenames = []
+                if inp.file_paths is not None:
+                    filenames = _copy_files_to_sandbox(session, inp.file_paths)
                 return_str = session.run(inp.code, inp.libraries).stdout
-               # print("return_str:", return_str)
                 code_path = DATA_PATH_DEFAULT / "plot_codes" / "code.py"
-                session.copy_from_runtime(
-                    src="/tmp/code.py", dest=str(code_path)
-                )
+                code_path.parent.mkdir(parents=True, exist_ok=True)
+                code_path.write_text(inp.code, encoding="utf-8")
                 self.output_file_path = DATA_PATH_DEFAULT / "outputs" / "output.png"
-                try:
-                    session.copy_from_runtime(
-                        src="/tmp/output.png", dest=str(self.output_file_path)
-                    )
-                    print("successfully copied file from sandbox")
-                except Exception as e:
-                    print("error copying file from sandbox. Error from here" ,  e, "String returned from sandbox: ", return_str)
+                self.output_file_path.parent.mkdir(parents=True, exist_ok=True)
+                session.copy_from_runtime(
+                    src="/sandbox/output.png", dest=str(self.output_file_path)
+                )
                 ### check if the output file encodes an image:
                 # open the image to check if the file is correct.
                 Image.open(
@@ -369,9 +411,9 @@ class PlotToolPanel:
                 self.image_panel.object = str(self.output_file_path)
                 self.plot_panel.clear()
                 self.plot_panel.append(self.image_panel)
-                if filename is not None:
+                if filenames:
                     self.current_input_osw_id = (
-                        "File:" + filename
+                        "File:" + filenames[0]
                     )
                 else:
                     self.current_input_osw_id = None
@@ -402,28 +444,17 @@ class PlotToolPanel:
         """
 
         with SandboxSession(
-            # lang="python",
             lang=inp.lang,
-            libraries=inp.libraries,
             image="python:3.12-slim",
-            # dockerfile=DOCKERFILE_SANDBOX_PATH,
-            # verbose=True,
             keep_template=True,
         ) as session:
-            # Run the code in the sandbox
             try:
-                if True:  # inp.file_path is not None:
-                    filename = Path(inp.file_path).name
-                    dest_filepath = "/sandbox/" + filename
-                    session.copy_to_runtime(
-                        src=inp.file_path,
-                        dest=dest_filepath,
-                    )
-                return_str = session.run(inp.code, inp.libraries).text
+                if inp.file_paths is not None:
+                    _copy_files_to_sandbox(session, inp.file_paths)
+                return_str = session.run(inp.code, inp.libraries).stdout
                 code_path = DATA_PATH_DEFAULT / "run_codes" / "code.py"
-                session.copy_from_runtime(
-                    src="/tmp/code.py", dest=str(code_path)
-                )
+                code_path.parent.mkdir(parents=True, exist_ok=True)
+                code_path.write_text(inp.code, encoding="utf-8")
 
                 return return_str
 
@@ -602,9 +633,27 @@ class HistoryToolAgent:
                 [
                     (
                         "system",
-                        "You are a helpful assistant. If the user wants to create"
-                        " something first try to find the category page for the given "
-                        "topic/keyword the user metions. Then create the instance.",
+                        "You are a helpful assistant with access to tools. "
+                        "ALWAYS call tools directly to fulfill the user's request — "
+                        "never describe what a tool call would look like or output JSON "
+                        "of a hypothetical call. If you have the information needed to "
+                        "call a tool, call it immediately.\n\n"
+                        "When the user asks to download files and run code:\n"
+                        "1. Download the files using the download tool.\n"
+                        "2. Pass the returned file paths directly to plot_by_code or "
+                        "run_code via the file_paths parameter.\n"
+                        "3. Include all required pip packages in the libraries list.\n\n"
+                        "MICRESS / micpy usage (pip package: micress-micpy):\n"
+                        "Geometry files (.geof) are automatically paired with binary "
+                        "files in the sandbox — do NOT set geometry manually.\n"
+                        "Correct API:\n"
+                        "  from micpy import bin\n"
+                        "  with bin.File('/sandbox/FILENAME.conc1') as f:\n"
+                        "      field = f.read(-1)          # NOT read_field()\n"
+                        "      fig, ax, cbar = field.plot() # NOT bin.plot()\n"
+                        "      fig.savefig('/sandbox/output.png')\n\n"
+                        "If the user wants to create something, first try to find the "
+                        "category page for the given topic/keyword, then create the instance.",
                     ),
                     ("placeholder", "{chat_history}"),
                     ("human", "{input}"),
