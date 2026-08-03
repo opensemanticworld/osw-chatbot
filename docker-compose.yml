@@ -11,7 +11,19 @@ services:
     env_file:
       - .env
     # options see https://panel.holoviz.org/how_to/server/commandline.html
-    command: ["uv", "run", "panel", "serve", "src/osw_chatbot/main.py", "--address", "0.0.0.0", "--port", "81"]
+    # --session-ids signed: without it a client may pick its own session id and
+    #   attach to somebody else's session, which would undo the per-session
+    #   isolation. Needs BOKEH_SECRET_KEY / BOKEH_SIGN_SESSIONS in .env.
+    # --auth-module: validates the token minted by the MediaWiki extension.
+    #   Open access when CHATBOT_SHARED_SECRET is unset.
+    # --num-procs: safe now that no state is shared between sessions.
+    command: ["uv", "run", "panel", "serve", "src/osw_chatbot/main.py",
+              "--address", "0.0.0.0", "--port", "81",
+              "--session-ids", "signed",
+              "--auth-module", "src/osw_chatbot/auth.py",
+              "--num-procs", "4",
+              "--unused-session-lifetime", "60000",
+              "--check-unused-sessions", "30000"]
 
   osw-openai-api-wrapper:
     image: opensemanticworld/osw-chatbot
@@ -22,3 +34,18 @@ services:
     env_file:
       - .env
     command: ["uv", "run", "uvicorn", "osw_chatbot.structured_output.api:app", "--host", "0.0.0.0", "--port", "80"]
+
+  # Integration harness: a stand-in for the MediaWiki page that embeds the
+  # chatbot iframe and answers every client-side tool from a fixture.
+  # Start with:  docker compose --profile test up osw-chatbot-harness
+  # Then open    http://localhost:8099/
+  osw-chatbot-harness:
+    image: opensemanticworld/osw-chatbot
+    container_name: osw-chat-harness
+    profiles: ["test"]
+    restart: "no"
+    env_file:
+      - .env
+    ports:
+      - "8099:8099"
+    command: ["uv", "run", "python", "src/osw_chatbot/tests/harness/serve.py", "--port", "8099"]

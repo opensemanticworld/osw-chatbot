@@ -5,7 +5,7 @@ from typing import Optional, Union, List
 from fastapi.middleware.cors import CORSMiddleware
 
 import json
-from osw_chatbot.structured_output.llm import get_llm_response_azure_openai
+from osw_chatbot.structured_output.llm import get_llm_response
 
 app = FastAPI()
 
@@ -44,7 +44,7 @@ def index(request: UserRequestIn):
         request.jsonschema = json.loads(request.jsonschema)
     if request.jsondata is not None and isinstance(request.jsondata, str) and request.jsondata != "":
         request.jsondata = json.loads(request.jsondata)
-    res = get_llm_response_azure_openai(request.promt, request.jsonschema, request.jsondata, request.files, request.web_search)
+    res = get_llm_response(request.promt, request.jsonschema, request.jsondata, request.files, request.web_search)
     print(res)
     return res
 

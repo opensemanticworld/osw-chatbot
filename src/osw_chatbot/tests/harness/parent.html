@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>osw-chatbot integration harness</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #121212; color: #e0e0e0; }
+  header { padding: .6rem 1rem; background: #1c1c1c; border-bottom: 1px solid #333;
+           display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 1rem; margin: 0 1rem 0 0; font-weight: 600; }
+  label { font-size: .8rem; color: #aaa; }
+  input, select, button { background: #2a2a2a; color: #eee; border: 1px solid #444;
+                          border-radius: 4px; padding: .3rem .5rem; font-size: .8rem; }
+  button { cursor: pointer; }
+  button:hover { background: #383838; }
+  #panes { display: flex; gap: 1px; background: #333; height: calc(100vh - 52px); }
+  .pane { flex: 1; display: flex; flex-direction: column; background: #121212; min-width: 0; }
+  .pane > .bar { padding: .4rem .6rem; background: #1c1c1c; display: flex; gap: .5rem;
+                 align-items: center; flex-wrap: wrap; border-bottom: 1px solid #333; }
+  .pane iframe { flex: 1 1 55%; width: 100%; border: 0; background: #fff; }
+  .log { flex: 1 1 45%; overflow: auto; font: 11px/1.45 ui-monospace, monospace;
+         padding: .4rem .6rem; border-top: 1px solid #333; }
+  .log div { white-space: pre-wrap; word-break: break-word; padding: 1px 0; }
+  .in  { color: #7fd1ff; }
+  .out { color: #9ae6a0; }
+  .warn{ color: #ffb86c; }
+  .err { color: #ff7b72; }
+  .meta{ color: #777; }
+  .tag { font-size: .7rem; padding: .1rem .35rem; border-radius: 3px; background: #333; color: #bbb; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>osw-chatbot harness</h1>
+  <label>backend <input id="backend" size="42" value="http://localhost:52670/main"></label>
+  <label>origin check
+    <select id="strict">
+      <option value="strict">strict (drop foreign origins)</option>
+      <option value="lax">lax (accept anything, like the old code)</option>
+    </select>
+  </label>
+  <button id="reload">reload both panes</button>
+  <button id="forge">forge a reply (id=BOGUS)</button>
+  <button id="clearlog">clear logs</button>
+  <span class="tag" id="counts"></span>
+</header>
+
+<div id="panes"></div>
+
+<script>
+// A stand-in for modules/ext.osw.ui.chatbot/chatbot.js. It speaks the same
+// postMessage protocol but answers every tool from a fixture, so the backend
+// can be exercised end to end without a MediaWiki instance.
+//
+// Two independent panes: give them different users to check that histories stay
+// apart, or the same user to check that a reload restores the conversation.
+// Every message in both directions is logged, which is what makes a
+// cross-session leak visible - a tool call triggered in pane A must never
+// appear in pane B's log.
+
+const FIXTURES = {
+  resize_chatwindow: () => "large",
+  multiply: (a, b) => a * b + 10,          // deliberately wrong, as in the extension
+  where_am_i: function () {
+    return {
+      url: "https://wiki.example.org/wiki/Item:OSW123",
+      title: "Harness page - " + this.user.label,
+      content: "<html><body><h1>Fixture page for " + this.user.label + "</h1></body></html>",
+      // anonymous readers have no name: mw.user.getName() returns null
+      user: { id: this.user.id, name: this.user.label }
+    };
+  },
+  highlight_html_element: () => "success",
+  redirect: (page) => "accepted (harness: no navigation)",
+  full_text_search: () => '<ul class="mw-search-results"><li><a title="Item:OSW123">Fixture result</a></li></ul>',
+  find_page_from_topic: () => [{ title: "Category:OSWfixture", label: "Fixture", description: "a fixture category", type: "Category" }],
+  get_page_content: (titles) => ({
+    query: { pages: { 1: { title: (titles || ["Item:OSW123"])[0],
+      revisions: [{ slots: { main: { "*": "{{fixture}}" }, jsondata: { "*": '{"label":"Fixture"}' } } }] } } }
+  }),
+  get_category_schema: () => ({
+    type: "object",
+    properties: { label: { type: "string" }, description: { type: "string" } },
+    required: ["label"]
+  }),
+  create_category_instance: () => "success",
+  smw_ask_query: () => ({ query: { results: { "Item:OSW123": { printouts: {} } } } }),
+  // 1x1 transparent png
+  get_file_data_url: () => "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+};
+
+const USERS = {
+  alice: { id: "Alice", label: "Alice", token: "" },
+  bob:   { id: "Bob",   label: "Bob",   token: "" },
+  anon:  { id: null,    label: "Anonymouse", token: "" }   // exercises the null-id path
+};
+
+const WIKI_ID = "harnesswiki";
+let totalIn = 0, totalOut = 0, dropped = 0;
+
+function makePane(name, defaultUser) {
+  const pane = document.createElement("div");
+  pane.className = "pane";
+  pane.innerHTML = `
+    <div class="bar">
+      <strong>${name}</strong>
+      <label>user
+        <select class="user">
+          ${Object.keys(USERS).map(u => `<option value="${u}"${u === defaultUser ? " selected" : ""}>${u}</option>`).join("")}
+        </select>
+      </label>
+      <label>token <input class="token" size="14" placeholder="optional"></label>
+      <button class="reload">reload</button>
+      <button class="wipe">wipe stored history</button>
+    </div>
+    <iframe></iframe>
+    <div class="log"></div>`;
+  document.getElementById("panes").appendChild(pane);
+
+  const iframe = pane.querySelector("iframe");
+  const logEl  = pane.querySelector(".log");
+  const userEl = pane.querySelector(".user");
+  const tokenEl= pane.querySelector(".token");
+
+  const ctx = { name, iframe, user: USERS[defaultUser], origin: null };
+
+  function log(cls, msg) {
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = new Date().toISOString().slice(11, 23) + " " + msg;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  ctx.log = log;
+
+  // Storage namespaced exactly like the extension does it, so a pane only ever
+  // sees its own user's history.
+  function ns(key) {
+    const uid = ctx.user.id === null ? "anon" : ctx.user.id;
+    return "osw-chatbot:" + WIKI_ID + ":" + uid + ":" + key;
+  }
+  ctx.ns = ns;
+
+  function load() {
+    const base = document.getElementById("backend").value.trim();
+    ctx.user = USERS[userEl.value];
+    let url;
+    try { url = new URL(base, location.href); }
+    catch (e) { log("err", "invalid backend url"); return; }
+    const token = tokenEl.value.trim() || ctx.user.token;
+    if (token) url.searchParams.set("token", token);
+    ctx.origin = url.origin;
+    log("meta", `loading ${url} (origin ${ctx.origin}, user ${ctx.user.label})`);
+    iframe.src = url.toString();
+  }
+  ctx.load = load;
+
+  pane.querySelector(".reload").onclick = load;
+  userEl.onchange = load;
+  pane.querySelector(".wipe").onclick = () => {
+    localStorage.removeItem(ns("history"));
+    log("warn", "removed " + ns("history"));
+  };
+
+  return ctx;
+}
+
+const panes = [makePane("pane A", "alice"), makePane("pane B", "bob")];
+
+function updateCounts() {
+  document.getElementById("counts").textContent =
+    `in ${totalIn} / out ${totalOut} / dropped ${dropped}`;
+}
+
+window.addEventListener("message", async (event) => {
+  const strict = document.getElementById("strict").value === "strict";
+
+  // Route by source window: this is what tells the two panes apart, and it is
+  // the check the real extension was missing.
+  const ctx = panes.find(p => p.iframe.contentWindow === event.source);
+  if (!ctx) {
+    dropped++; updateCounts();
+    console.warn("harness: message from an unknown window", event.origin, event.data);
+    return;
+  }
+  if (strict && ctx.origin && event.origin !== ctx.origin) {
+    dropped++; updateCounts();
+    ctx.log("warn", `DROPPED message from ${event.origin} (expected ${ctx.origin})`);
+    return;
+  }
+
+  const data = event.data;
+  if (!data || typeof data !== "object" || !data.type) return;
+  totalIn++; updateCounts();
+
+  const target = strict ? (ctx.origin || "*") : "*";
+
+  if (data.type.indexOf("chatbot_storage_") === 0) {
+    const key = ctx.ns(data.key);
+    if (data.type === "chatbot_storage_get") {
+      const value = localStorage.getItem(key);
+      ctx.log("in", `storage_get ${data.key} -> ${value === null ? "(empty)" : value.length + " bytes"}`);
+      ctx.iframe.contentWindow.postMessage(
+        { type: "chatbot_storage_result", id: data.id, value }, target);
+      totalOut++; updateCounts();
+    } else if (data.type === "chatbot_storage_set") {
+      localStorage.setItem(key, String(data.value));
+      ctx.log("out", `storage_set ${data.key} (${String(data.value).length} bytes)`);
+    } else if (data.type === "chatbot_storage_remove") {
+      localStorage.removeItem(key);
+      ctx.log("out", `storage_remove ${data.key}`);
+    }
+    return;
+  }
+
+  if (data.type !== "function_call") return;
+
+  ctx.log("in", `function_call ${data.name}(${JSON.stringify(data.args)}) id=${data.id}`);
+  const fn = FIXTURES[data.name];
+  let result;
+  if (!fn) {
+    ctx.log("err", `no fixture for ${data.name}`);
+    result = "harness: no fixture for " + data.name;
+  } else {
+    try {
+      result = await fn.apply(ctx, data.args || []);
+    } catch (e) {
+      ctx.log("err", `fixture ${data.name} threw: ${e}`);
+      result = "harness error: " + e;
+    }
+  }
+  ctx.iframe.contentWindow.postMessage(
+    { type: "function_call_result", id: data.id, result }, target);
+  totalOut++; updateCounts();
+  ctx.log("out", `result for ${data.name} id=${data.id}`);
+});
+
+document.getElementById("reload").onclick = () => panes.forEach(p => p.load());
+document.getElementById("clearlog").onclick = () => {
+  document.querySelectorAll(".log").forEach(l => l.innerHTML = "");
+  totalIn = totalOut = dropped = 0; updateCounts();
+};
+// Send a reply nobody asked for: the backend must ignore it (unknown uuid).
+document.getElementById("forge").onclick = () => {
+  panes.forEach(p => {
+    p.iframe.contentWindow.postMessage(
+      { type: "function_call_result", id: "BOGUS", result: { url: "forged" } }, "*");
+    p.log("warn", "sent forged result id=BOGUS - backend must ignore it");
+  });
+};
+
+updateCounts();
+panes.forEach(p => p.load());
+</script>
+</body>
+</html>

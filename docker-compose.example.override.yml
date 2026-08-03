@@ -14,6 +14,9 @@ services:
         labels:
             caddy_2: ${UI_SERVER}
             caddy_2.reverse_proxy: "{{upstreams 81}}"
+            # Only the wiki may embed the chatbot. Without this any site can
+            # frame it and drive the postMessage tool channel.
+            caddy_2.header.Content-Security-Policy: "frame-ancestors ${WIKI_SERVER}"
 
 networks:
   # Add caddy as an external network.
