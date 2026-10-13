@@ -36,13 +36,17 @@ ASSISTANT_NAME = "🤖 Assistant"
 
 COMPACT_MESSAGE_CSS = """
 .avatar, .left { display: none !important; }
-/* :host is the message row itself, which otherwise keeps a 10px margin on
-   each side; .center is the bubble, which does not fill its column. Together
-   they left ~30px unused on the right against 15px on the left. */
+/* The stylesheet is handed to every nested component, so :host matches each
+   level - a margin here compounds. Zero it and let the card's own 5px be the
+   gutter, otherwise the row's default 10px is added on top of it. */
 :host { margin-left: 0 !important; margin-right: 0 !important; }
+/* Everything from the row down to the bubble is sized by bokeh in fixed
+   pixels - in particular the column between .center and the bubble gets an
+   explicit width that is ~15px short, and since the bubble is left aligned
+   the whole shortfall shows up on the right. Let each level fill its parent
+   so the gaps stay equal and the text follows when the popup is maximized. */
+:host { width: 100% !important; }
 .right, .center { width: 100% !important; max-width: 100% !important; }
-/* the bubble sizes to its content, so short lines still wrapped while ~60px
-   sat unused next to them */
 .message { width: 100% !important; max-width: 100% !important; }
 """
 

@@ -172,6 +172,12 @@ def run(args):
         ## avatar is hidden with CSS - which is exactly the kind of fix that
         ## silently regresses on a Panel upgrade.
 
+        # Measure at the width the chat actually gets in the wiki popup, not
+        # at playwright's roomy default viewport.
+        original_viewport = page.viewport_size
+        page.set_viewport_size({"width": 420, "height": original_viewport["height"]})
+        page.wait_for_timeout(2500)
+
         frame = chat_frame(page, PANE_A)
         iframe_w = page.locator(".pane").nth(PANE_A).locator("iframe").bounding_box()["width"]
         gutter = frame.locator(".left")
@@ -206,6 +212,23 @@ def run(args):
                 gap < 0.15 * iframe_w,
                 f"gap right of the bubble is {gap:.0f}px of {iframe_w:.0f}px",
             )
+
+        # ... and it has to follow when the wiki popup is maximized. A bubble
+        # that sizes to its content stays narrow however wide the frame gets.
+        narrow = frame.locator(".message").first.bounding_box()
+        page.set_viewport_size({"width": 1400, "height": original_viewport["height"]})
+        page.wait_for_timeout(3000)
+        wide_iframe = page.locator(".pane").nth(PANE_A).locator("iframe").bounding_box()["width"]
+        wide = frame.locator(".message").first.bounding_box()
+        check(
+            "messages expand when the frame is maximized",
+            wide and narrow and wide["width"] > narrow["width"] * 2
+            and wide["width"] > 0.85 * wide_iframe,
+            f"bubble {narrow['width']:.0f}px -> {wide['width']:.0f}px "
+            f"in a {wide_iframe:.0f}px frame",
+        )
+        page.set_viewport_size(original_viewport)
+        page.wait_for_timeout(2000)
 
         ## 4. the stored history is per wiki user, because the parent - not the
         ##    backend - builds the storage key
