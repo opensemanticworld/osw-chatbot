@@ -33,3 +33,16 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Without this the wheel contains only .py files, so the skills - which are
+# markdown - would be missing from the installed package and the assistant
+# would silently have none.
+"osw_chatbot" = ["skills/*.md"]

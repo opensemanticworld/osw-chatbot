@@ -46,14 +46,52 @@ def chat_frame(page, index):
     return page.locator(".pane").nth(index).frame_locator("iframe")
 
 
-def send_prompt(page, index, text, timeout):
-    """Type into the Panel ChatInterface inside a pane's iframe."""
+def send_prompt(page, index, text, timeout, attempts=3):
+    """Type into the Panel ChatInterface inside a pane's iframe.
+
+    Verifies the message actually left the box. Right after a turn the input
+    reports itself visible and enabled a moment before the ChatInterface is
+    ready again, and a send in that window is silently swallowed - no user
+    message, no callback, nothing to wait for.
+    """
     frame = chat_frame(page, index)
-    box = frame.locator("input.bk-input, textarea.bk-input").first
-    box.wait_for(state="visible", timeout=timeout)
-    box.click()
-    box.fill(text)
-    box.press("Enter")
+    messages = frame.locator("div.message, .bk-panel-models-chat-ChatMessage")
+    for attempt in range(attempts):
+        before = messages.count()
+        box = frame.locator("input.bk-input, textarea.bk-input").first
+        box.wait_for(state="visible", timeout=timeout)
+        box.click()
+        box.fill(text)
+        box.press("Enter")
+        # A new bubble is the only unambiguous proof it was accepted: checking
+        # that the input cleared would also pass when the fill never landed.
+        # Poll through the frame locator - the iframe is cross-origin, so
+        # contentDocument is null and page.wait_for_function cannot see inside.
+        for _ in range(40):
+            if messages.count() > before:
+                return
+            page.wait_for_timeout(250)
+        if attempt == attempts - 1:
+            raise RuntimeError(
+                f"the chat did not accept the prompt after {attempts} attempts"
+            )
+        page.wait_for_timeout(2500)
+
+
+def wait_for_turn(page, index, timeout):
+    """Wait until the current turn finished.
+
+    The ChatInterface disables its input while the callback runs, so sending the
+    next prompt too early silently goes nowhere. Persisting the history is the
+    last thing a turn does, so a new storage_set is the reliable signal.
+    """
+    before = pane_log(page, index).count("storage_set")
+    page.wait_for_function(
+        """([i, n]) => (document.querySelectorAll('.pane')[i]
+               .querySelector('.log').textContent.match(/storage_set/g) || []).length > n""",
+        arg=[index, before],
+        timeout=timeout,
+    )
 
 
 def wait_for_log(page, index, needle, timeout):
@@ -274,9 +312,25 @@ def run(args):
                  .filter(k => k.startsWith('osw-chatbot:'))
                  .forEach(k => localStorage.removeItem(k))"""
         )
+        counts = [pane_log(page, p).count("storage_get") for p in (PANE_A, PANE_B)]
         for pane in (PANE_A, PANE_B):
             page.locator(".pane").nth(pane).locator("button.reload").click()
-        page.wait_for_timeout(4000)
+        # Wait for the new sessions to actually be live. A fixed sleep is not
+        # enough: the input renders before the websocket is ready, and a prompt
+        # sent in that window goes nowhere.
+        try:
+            page.wait_for_function(
+                """([a, b]) => {
+                    const n = i => (document.querySelectorAll('.pane')[i]
+                        .querySelector('.log').textContent.match(/storage_get/g) || []).length;
+                    return n(0) > a && n(1) > b;
+                }""",
+                arg=counts,
+                timeout=args.timeout,
+            )
+        except Exception as e:
+            print(f"        (panes did not re-register: {str(e)[:80]})")
+        page.wait_for_timeout(1500)
 
         ## 5. a tool call reaches only the pane that triggered it
 
@@ -295,6 +349,61 @@ def run(args):
                 "function_call" not in log_b,
                 f"pane B log: {log_b[-300:]}",
             )
+
+            ## 5b. writing: the tool is reached, and a refusal is relayed
+
+            try:
+                wait_for_turn(page, PANE_A, args.timeout)
+            except Exception as e:
+                print(f"        (previous turn did not settle: {str(e)[:80]})")
+            page.select_option("#writes", "denied")
+            page.evaluate("() => { window.__writes.length = 0; }")
+            def edit_attempted():
+                return page.evaluate(
+                    "() => (window.__writes || []).some(w => w.tool === 'edit_page')"
+                )
+
+            ok, detail = False, ""
+            # The assistant is told to confirm before editing, so it may well
+            # ask first - a user would then say yes. Allow one such exchange.
+            for prompt in ("Use the edit_page tool now to put the text 'hello' into the "
+                           "main slot of the page Item:OSWtest.",
+                           "Yes, go ahead and do it now."):
+                try:
+                    send_prompt(page, PANE_A, prompt, args.timeout)
+                    page.wait_for_function(
+                        "() => (window.__writes || []).some(w => w.tool === 'edit_page')",
+                        timeout=90000,
+                    )
+                    ok = True
+                    break
+                except Exception as e:
+                    detail = str(e)[:120]
+                    try:
+                        wait_for_turn(page, PANE_A, args.timeout)
+                    except Exception:
+                        pass
+                if edit_attempted():
+                    ok = True
+                    break
+            check("an edit request reaches edit_page", ok, "" if ok else detail)
+
+            calls = page.evaluate("() => window.__writes") or []
+            check(
+                "the write happened only in the pane that asked",
+                bool(calls) and all(w.get("pane") == "pane A" for w in calls),
+                f"panes seen: {sorted({str(w.get('pane')) for w in calls})}",
+            )
+
+            try:
+                chat_frame(page, PANE_A).get_by_text(
+                    "permission", exact=False
+                ).first.wait_for(state="attached", timeout=args.timeout)
+                ok, detail = True, ""
+            except Exception as e:
+                ok, detail = False, str(e)[:200]
+            check("the permission error is relayed to the user", ok, detail)
+            page.select_option("#writes", "ok")
 
             ## 4. history survives a reload of that pane
 

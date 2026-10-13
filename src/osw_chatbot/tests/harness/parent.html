@@ -41,6 +41,14 @@
       <option value="lax">lax (accept anything, like the old code)</option>
     </select>
   </label>
+  <label>writes
+    <select id="writes">
+      <option value="ok">succeed</option>
+      <option value="denied">permission denied</option>
+      <option value="disabled">action disabled</option>
+      <option value="declined">user declines</option>
+    </select>
+  </label>
   <button id="reload">reload both panes</button>
   <button id="forge">forge a reply (id=BOGUS)</button>
   <button id="clearlog">clear logs</button>
@@ -88,8 +96,42 @@ const FIXTURES = {
   create_category_instance: () => "success",
   smw_ask_query: () => ({ query: { results: { "Item:OSW123": { printouts: {} } } } }),
   // 1x1 transparent png
-  get_file_data_url: () => "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+  get_file_data_url: () => "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+
+  // Write tools. The header dropdown decides what they answer, so a test can
+  // exercise the refusal paths without a wiki.
+  edit_page: function (title, slots, summary) {
+    writes.push({ pane: this.name, tool: "edit_page", title: title, slots: slots, summary: summary });
+    return writeOutcome(title, "change");
+  },
+  delete_page: function (title, reason) {
+    writes.push({ pane: this.name, tool: "delete_page", title: title, reason: reason });
+    return writeOutcome(title, "deletion");
+  },
+  confirm_action: function (action, details) {
+    writes.push({ pane: this.name, tool: "confirm_action", action: action, details: details });
+    return document.getElementById("writes").value !== "declined";
+  }
 };
+
+// Recorded write attempts, readable from the test via window.__writes.
+const writes = [];
+window.__writes = writes;
+
+function writeOutcome(title, noun) {
+  switch (document.getElementById("writes").value) {
+    case "denied":
+      return { ok: false, code: "permissiondenied",
+               message: "You do not have permission to do that on this page." };
+    case "disabled":
+      return { ok: false, code: "action-disabled",
+               message: "The wiki has not enabled the assistant to make this " + noun + "." };
+    case "declined":
+      return { ok: false, code: "declined", message: "You declined the " + noun + "." };
+    default:
+      return { ok: true, title: title, created: true };
+  }
+}
 
 const USERS = {
   alice: { id: "Alice", label: "Alice", token: "" },

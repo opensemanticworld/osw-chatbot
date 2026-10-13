@@ -88,6 +88,36 @@ with `$wgChatbotSecret`) and appends it to the iframe url; `auth.py` validates
 it as a Panel `--auth-module`. Set the same value as `CHATBOT_SHARED_SECRET`
 here. Leave it empty to keep the backend open.
 
+#### Writing to the wiki
+
+`edit_page` and `delete_page` wire through MwJson's page API in the user's browser, so every
+write happens with that user's MediaWiki rights. `edit_page` touches only the slots it is
+given:
+
+| Slot | Content |
+|---|---|
+| `jsondata`, `jsonschema` | JSON object |
+| `main` | wikitext - except on `.js`/`.css` pages (source) and in the legacy `JsonSchema:` namespace (JSON) |
+| `header`, `footer` | wikitext, normally `{{#invoke:Entity\|header}}` / `\|footer}}`, set automatically alongside `jsondata` |
+| `schema_template`, `data_template`, `header_template`, `footer_template` | template source |
+
+Both are gated by `$wgChatbotActions` in the wiki (empty of write actions by default) and,
+where configured, by a confirmation dialog shown in the browser *before* the tool runs - the
+assistant cannot skip it. Refusals come back as a sentence the assistant relays rather than
+a traceback.
+
+#### Skills
+
+`src/osw_chatbot/skills/*.md` are longer instruction sets the assistant pulls in on demand.
+Only a one-line index goes into the system prompt; the body is fetched with the `load_skill`
+tool when a task matches, which keeps the base prompt short. Two ship today:
+
+* `osl-page-editing` - wikitext rather than Markdown, inline `#ask` queries and data tables,
+  and the slot/schema conventions for Category, Property, Item and JsonSchema pages.
+* `mediawiki-component` - building an interactive component as a user-scoped script.
+
+Add one by dropping in a markdown file with `name` and `description` front matter.
+
 #### Integration harness
 
 `src/osw_chatbot/tests/harness/` stands in for the MediaWiki page: it embeds

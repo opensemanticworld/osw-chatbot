@@ -44,8 +44,8 @@ def sign(payload_b64: str, secret: str) -> str:
     return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 
-def verify_token(token, secret=None, now=None):
-    """Return the username carried by `token`, or None if it is not valid."""
+def decode_token(token, secret=None, now=None):
+    """Return the verified token payload, or None if the token is not valid."""
     secret = CHATBOT_SHARED_SECRET if secret is None else secret
     if not secret or not token:
         return None
@@ -72,7 +72,36 @@ def verify_token(token, secret=None, now=None):
         return None
 
     user = payload.get("u")
-    return user if isinstance(user, str) and user else None
+    if not isinstance(user, str) or not user:
+        return None
+    return payload
+
+
+def verify_token(token, secret=None, now=None):
+    """Return the username carried by `token`, or None if it is not valid."""
+    payload = decode_token(token, secret, now)
+    return payload.get("u") if payload else None
+
+
+def token_actions(token, secret=None, now=None):
+    """The action lists the wiki signed into `token`.
+
+    Returns ``(actions, confirm_actions)``. The backend gates 'websearch'
+    itself - it runs here, not in the browser, so it cannot read the wiki
+    config. Everything else is enforced in the browser, which is where the
+    user's MediaWiki session lives.
+
+    Falls back to web search only when there is no (valid) token, which keeps a
+    token-less deployment working without silently granting more.
+    """
+    payload = decode_token(token, secret, now) or {}
+    actions = payload.get("a")
+    confirm = payload.get("ca")
+    if not isinstance(actions, list):
+        actions = ["websearch"]
+    if not isinstance(confirm, list):
+        confirm = []
+    return [a for a in actions if isinstance(a, str)], [c for c in confirm if isinstance(c, str)]
 
 
 def _session_id_is_signed(handler) -> bool:

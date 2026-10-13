@@ -13,7 +13,7 @@ if not env_loaded:
 
 from langchain_core.messages import HumanMessage
 
-from osw_chatbot.auth import verify_token
+from osw_chatbot.auth import token_actions, verify_token
 from osw_chatbot.chat import history as hist
 from osw_chatbot.chat.client_store import ClientStoreWidget
 from osw_chatbot.config import HISTORY_ENABLED, PARENT_ORIGINS
@@ -51,13 +51,8 @@ COMPACT_MESSAGE_CSS = """
 """
 
 
-def current_user():
-    """Verified wiki username from the ?token= query arg, or None.
-
-    The auth module has already rejected invalid tokens by the time the app is
-    built; this only re-reads the name. Never use the `user` field returned by
-    the where_am_i tool for this - that one is asserted by the client.
-    """
+def current_token():
+    """The raw ?token= query arg of this session, or None."""
     try:
         args = pn.state.session_args or {}
         raw = args.get("token")
@@ -65,12 +60,27 @@ def current_user():
         return None
     if not raw:
         return None
-    token = raw[0].decode() if isinstance(raw[0], bytes) else raw[0]
-    return verify_token(token)
+    return raw[0].decode() if isinstance(raw[0], bytes) else raw[0]
+
+
+def current_user():
+    """Verified wiki username from the ?token= query arg, or None.
+
+    The auth module has already rejected invalid tokens by the time the app is
+    built; this only re-reads the name. Never use the `user` field returned by
+    the where_am_i tool for this - that one is asserted by the client.
+    """
+    return verify_token(current_token())
 
 
 def build_app():
-    session = ChatSession(allowed_origins=PARENT_ORIGINS, user=current_user())
+    actions, confirm_actions = token_actions(current_token())
+    session = ChatSession(
+        allowed_origins=PARENT_ORIGINS,
+        user=current_user(),
+        actions=actions,
+        confirm_actions=confirm_actions,
+    )
     store = ClientStoreWidget(
         store_key="history",
         allowed_origins=PARENT_ORIGINS,

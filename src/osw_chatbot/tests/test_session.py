@@ -35,6 +35,9 @@ EXPECTED_TOOLS = [
     "get_page_content",
     "smw_ask_query",
     "get_file_content",
+    "edit_page",
+    "delete_page",
+    "load_skill",
 ]
 
 
@@ -182,6 +185,94 @@ def test_client_tool_errors_are_routed_to_the_model(session):
     assert issubclass(ClientToolError, ToolException)
     for tool in session.tools[: len(EXPECTED_TOOLS)]:
         assert callable(tool.handle_tool_error), tool.name
+
+
+## write tools, actions and skills
+
+
+def test_edit_page_documents_the_slot_data_model(session):
+    """The docstring is the only place the model learns what a slot takes."""
+    tool = {t.name: t for t in session.tools}["edit_page"]
+    assert set(tool.args) == {"title", "slots", "summary"}
+    doc = tool.description
+    for slot in ("jsondata", "jsonschema", "main", "header", "footer", "schema_template"):
+        assert slot in doc, f"{slot} missing from the edit_page description"
+    assert "Markdown" in doc  # the mistake it has to avoid
+    assert "User:" in doc  # the user-scope rule for scripts
+
+
+def test_a_refusal_from_the_browser_is_raised(session):
+    """Write tools report refusals as data; the model must not read that as success."""
+    from osw_chatbot.toolcalling.agent import ClientToolError
+
+    async def scenario():
+        pending = asyncio.ensure_future(
+            session.call_client_side_tool("edit_page", ["Item:X", {}], timeout=5)
+        )
+        await asyncio.sleep(0)
+        call_id = session.frontend.function_call["id"]
+        session.frontend.function_called = {
+            "id": call_id,
+            "result": {"ok": False, "code": "permissiondenied", "message": "nope"},
+        }
+        with pytest.raises(ClientToolError, match="nope"):
+            await pending
+
+    asyncio.run(scenario())
+
+
+def test_websearch_is_gated_by_the_signed_actions():
+    agent = pytest.importorskip("osw_chatbot.toolcalling.agent")
+
+    # the backend-side tools, as opposed to the wiki's own full_text_search
+    websearch = {"web_search_tool", "simple_browse_web_page_tool"}
+
+    without = agent.ChatSession(actions=[])
+    with_search = agent.ChatSession(actions=["websearch"])
+    try:
+        assert websearch.isdisjoint({t.name for t in without.tools})
+        assert websearch <= {t.name for t in with_search.tools}
+    finally:
+        without.close()
+        with_search.close()
+
+
+def test_token_carries_the_action_lists():
+    from osw_chatbot.auth import token_actions
+
+    now = int(time.time())
+    token = _mint({"u": "Alice", "iat": now, "exp": now + 600,
+                   "a": ["websearch", "edit"], "ca": ["script"]})
+    assert token_actions(token) == (["websearch", "edit"], ["script"])
+    # no / invalid token: fall back to search only, never to write access
+    assert token_actions("garbage") == (["websearch"], [])
+
+
+def test_skills_are_indexed_and_loadable(session):
+    from osw_chatbot.skills import skill_index
+
+    assert {"mediawiki-component", "osl-page-editing"} <= set(session.skills)
+    index = skill_index(session.skills)
+    for name in session.skills:
+        assert name in index
+
+    body = session.skills["osl-page-editing"].body
+    # the two things this skill exists to stop / enable
+    assert "'''bold'''" in body and "**bold**" in body
+    assert "format=datatables" in body
+
+
+def test_load_skill_rejects_an_unknown_name(session):
+    tool = {t.name: t for t in session.tools}["load_skill"]
+
+    async def scenario():
+        assert "wikitext" in (await tool.ainvoke({"name": "osl-page-editing"})).lower()
+        # handle_tool_error turns the refusal into an observation rather than
+        # letting it escape as a traceback - the model is told, and recovers.
+        answer = await tool.ainvoke({"name": "nope"})
+        assert "no skill" in answer and "osl-page-editing" in answer
+
+    asyncio.run(scenario())
 
 
 def test_a_silent_browser_raises_instead_of_returning_none(session):
