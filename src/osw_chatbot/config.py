@@ -34,6 +34,20 @@ PARENT_ORIGINS = _origins("PARENT_ORIGIN")
 # Seconds to wait for the users browser to answer a client-side tool call.
 CLIENT_TOOL_TIMEOUT = float(os.getenv("CLIENT_TOOL_TIMEOUT", "30"))
 
+## Chat UI
+
+# Shown once at the top of a new conversation. Configurable so a deployment
+# can reword or translate it.
+CHATBOT_INTRO = os.getenv(
+    "CHATBOT_INTRO",
+    "I am an AI assistant - my answers can be wrong or incomplete, so please "
+    "check anything important. I act with your own wiki account, and I can "
+    "create or change pages when you ask me to.",
+).strip()
+
+# Largest attachment the browser will stage, in bytes.
+ATTACHMENT_MAX_BYTES = int(os.getenv("ATTACHMENT_MAX_BYTES", str(20 * 1024 * 1024)))
+
 ## Chat history persistence
 
 HISTORY_ENABLED = _flag("HISTORY_ENABLED", "true")

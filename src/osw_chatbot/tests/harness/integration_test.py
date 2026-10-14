@@ -196,6 +196,17 @@ def run(args):
             page.locator("#counts").inner_text(),
         )
 
+        ## 1b. a new conversation opens with the disclaimer
+
+        try:
+            chat_frame(page, PANE_A).get_by_text(
+                "AI assistant", exact=False
+            ).first.wait_for(state="attached", timeout=args.timeout)
+            ok, detail = True, ""
+        except Exception as e:
+            ok, detail = False, str(e)[:160]
+        check("a new chat shows the AI disclaimer", ok, detail)
+
         ## 2. a reply nobody asked for must be ignored
 
         page.click("#forge")
@@ -348,6 +359,27 @@ def run(args):
                 "pane B never saw pane A's tool call",
                 "function_call" not in log_b,
                 f"pane B log: {log_b[-300:]}",
+            )
+
+            ## 5a. the tool call is visible in the chat while it runs
+
+            frame_a = chat_frame(page, PANE_A)
+            try:
+                frame_a.get_by_text("the current page", exact=False).first.wait_for(
+                    state="attached", timeout=args.timeout
+                )
+                ok, detail = True, ""
+            except Exception as e:
+                ok, detail = False, str(e)[:160]
+            check("the tool call shows up as a progress step", ok, detail)
+
+            # the step must summarise, not paste the page in
+            steps = frame_a.locator(".bk-panel-models-chat-ChatStep, .step")
+            blob = " ".join(steps.all_inner_texts()) if steps.count() else ""
+            check(
+                "progress steps leak no page content",
+                "<html" not in blob.lower() and "data:image" not in blob,
+                blob[:120],
             )
 
             ## 5b. writing: the tool is reached, and a refusal is relayed

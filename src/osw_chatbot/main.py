@@ -15,9 +15,16 @@ from langchain_core.messages import HumanMessage
 
 from osw_chatbot.auth import token_actions, verify_token
 from osw_chatbot.chat import history as hist
+from osw_chatbot.chat.attachment import AttachmentWidget
 from osw_chatbot.chat.client_store import ClientStoreWidget
-from osw_chatbot.config import HISTORY_ENABLED, PARENT_ORIGINS
+from osw_chatbot.config import (
+    ATTACHMENT_MAX_BYTES,
+    CHATBOT_INTRO,
+    HISTORY_ENABLED,
+    PARENT_ORIGINS,
+)
 from osw_chatbot.toolcalling.agent import ChatSession
+from osw_chatbot.toolcalling.progress import ToolProgressHandler
 
 pn.extension()
 
@@ -88,10 +95,30 @@ def build_app():
         height=0,
         margin=0,
     )
+    attachments = AttachmentWidget(
+        allowed_origins=PARENT_ORIGINS,
+        max_bytes=ATTACHMENT_MAX_BYTES,
+        margin=0,
+    )
+    sent_attachments = set()
+
+    def pending_attachments():
+        """Attachments not yet shown to the model.
+
+        Only on the turn they arrive - a preview is a few hundred kB and
+        resending it every turn would pay for it again each time.
+        """
+        pending = [a for a in attachments.attachments if a.get("id") not in sent_attachments]
+        sent_attachments.update(a.get("id") for a in pending)
+        return pending
 
     async def get_response(contents, user, instance):
         print(contents)
-        response = await session.invoke(contents)
+        response = await session.invoke(
+            contents,
+            attachments=pending_attachments(),
+            callbacks=[ToolProgressHandler(instance)],
+        )
         print(response)
         persist()
         return response["output"]
@@ -148,6 +175,10 @@ def build_app():
                 respond=False,
             )
         if not messages:
+            # Only on a new conversation - a returning user has read it, and
+            # repeating it on every reload would be noise.
+            if CHATBOT_INTRO:
+                chat_bot.send(CHATBOT_INTRO, user=ASSISTANT_NAME, respond=False)
             chat_bot.send(GREETING, user=ASSISTANT_NAME, respond=False)
         # Attach after the replay so it is not mistaken for a user edit.
         chat_bot.param.watch(on_messages_changed, "objects")
@@ -166,7 +197,7 @@ def build_app():
     except Exception as e:  # noqa: BLE001
         print(f"osw-chatbot: no session teardown hook available ({e})")
 
-    return pn.Column(chat_bot, session.frontend, store)
+    return pn.Column(chat_bot, attachments, session.frontend, store)
 
 
 if __name__ == "__main__":

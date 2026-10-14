@@ -116,6 +116,56 @@ with sync_playwright() as pw:
     }""", [f"User:{USER}/ChatbotTest.js"])
     check("a user-space script page can be written", res.get("ok"), json.dumps(res)[:160])
 
+    # 6. upload a file the way upload_file does, and check it is a WikiFile entity
+    res = page.evaluate("""async () => {
+        await mw.loader.using(['ext.mwjson.api', 'ext.mwjson.util', 'ext.OpenSemanticLab.forms']);
+        // 1x1 png
+        const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const uuid = mwjson.util.uuidv4();
+        const target = mwjson.util.OswId(uuid) + ".png";
+        const title = "File:" + target;
+        const file = new File([new Blob([bytes], {type: "image/png"})], target, {type: "image/png"});
+        try {
+            let page;
+            try { page = await mwjson.api.getFilePage(target); }
+            catch (e) { page = await mwjson.api.getPage(title); }
+            page.file = file; page.file.contentBlob = file; page.file.changed = true;
+            page.slots['jsondata'] = {
+                type: ["Category:OSW11a53cdfbdc24524bf8ac435cbf65d9d"],
+                uuid: uuid, file: title,
+                label: [{ text: "chatbot verification.png", lang: "en" }]
+            };
+            page.slots_changed['jsondata'] = true;
+            page = await osl.util.postProcessPage(page, []);
+            await mwjson.api.updatePage(page, { comment: "chatbot verification" });
+            return { ok: true, title: title };
+        } catch (e) { return { ok: false, code: e && e.code, info: e && (e.info || e.message) }; }
+    }""")
+    check("upload a file as a WikiFile entity", res.get("ok"), json.dumps(res)[:200])
+
+    if res.get("ok"):
+        file_title = res["title"]
+        back = page.evaluate("""async ([title]) => {
+            const r = await fetch(mw.config.get('wgScriptPath') +
+                '/api.php?action=query&format=json&prop=revisions&rvprop=content&rvslots=*&titles=' +
+                encodeURIComponent(title));
+            const d = await r.json(); const pages = d.query.pages; const k = Object.keys(pages)[0];
+            const slots = (pages[k].revisions || [{}])[0].slots || {};
+            return {missing: 'missing' in pages[k],
+                    slots: Object.fromEntries(Object.entries(slots).map(([n, s]) => [n, s['*']]))};
+        }""", [file_title])
+        jd = json.loads(back["slots"].get("jsondata") or "{}")
+        check("the file page carries the WikiFile type and a self-reference",
+              jd.get("type") == ["Category:OSW11a53cdfbdc24524bf8ac435cbf65d9d"]
+              and jd.get("file") == file_title and bool(jd.get("label")),
+              json.dumps(jd)[:160])
+        check("the file page has the header/footer invokes",
+              "#invoke:Entity|header" in (back["slots"].get("header") or ""),
+              str(back["slots"].get("header"))[:60])
+        page.evaluate("""async ([t]) => { try { await mwjson.api.deletePage(t, {comment:'cleanup'}); } catch (e) {} }""",
+                      [file_title])
+
     # cleanup
     for t in [TITLE, f"User:{USER}/ChatbotTest.js"]:
         page.evaluate("""async ([t]) => { try { await mwjson.api.deletePage(t, {comment:'cleanup'}); } catch (e) {} }""", [t])

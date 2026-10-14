@@ -23,6 +23,7 @@ os.environ.setdefault("OPENAI_MODEL", "gpt-5-mini")
 if not os.environ.get("CHATBOT_SHARED_SECRET"):
     os.environ["CHATBOT_SHARED_SECRET"] = "test-secret"
 
+from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from osw_chatbot import auth  # noqa: E402
 
 EXPECTED_TOOLS = [
@@ -31,12 +32,15 @@ EXPECTED_TOOLS = [
     "highlight_html_element",
     "redirect",
     "full_text_search",
+    "find_page_from_topic",
     "create_category_instance",
+    "get_category_schema",
     "get_page_content",
     "smw_ask_query",
     "get_file_content",
     "edit_page",
     "delete_page",
+    "upload_file",
     "load_skill",
 ]
 
@@ -263,6 +267,10 @@ def test_skills_are_indexed_and_loadable(session):
 
     # the component skill has to carry the data APIs an app actually needs,
     # otherwise the model invents endpoints
+    # the entity-first rule and the slot trap the model actually fell into
+    assert "Never write structured data to `main`" in body
+    assert "find_page_from_topic" in body and "Wiki File" in body
+
     component = session.skills["mediawiki-component"].body
     for needle in ("action: 'ask'", "rvslots", "mwjson.api.updatePage", "postProcessPage"):
         assert needle in component, f"{needle} missing from mediawiki-component"
@@ -282,6 +290,62 @@ def test_load_skill_rejects_an_unknown_name(session):
         assert "no skill" in answer and "osl-page-editing" in answer
 
     asyncio.run(scenario())
+
+
+## attachments, multimodal turns and progress
+
+
+def test_an_image_attachment_reaches_the_model_as_an_image_block(session):
+    """A string template would stringify the list - the model would get a repr."""
+    data_url = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+    content = session._content(
+        "what is this?",
+        [{"id": "att-1", "name": "device.jpg", "mime": "image/jpeg",
+          "size": 1234, "preview": data_url}],
+    )
+    assert isinstance(content, list)
+    images = [b for b in content if b.get("type") == "image_url"]
+    assert len(images) == 1 and images[0]["image_url"]["url"] == data_url
+    text = next(b for b in content if b.get("type") == "text")["text"]
+    assert "att-1" in text and "device.jpg" in text   # so it can call upload_file
+
+    # and the prompt alone stays a plain string when nothing is attached
+    assert session._content("hello", []) == "hello"
+
+
+def test_an_attachment_never_lands_in_the_stored_history(session):
+    from osw_chatbot.chat import history as hist
+
+    session.chat_history = [
+        HumanMessage(content="what is this?"),
+        AIMessage(content="a multimeter"),
+    ]
+    assert "data:image" not in hist.dumps(session.chat_history)
+
+
+def test_upload_is_gated_like_the_other_writes(session):
+    tool = {t.name: t for t in session.tools}["upload_file"]
+    assert set(tool.args) == {"attachment_id", "label"}
+    assert "File:" in tool.description
+
+
+def test_edit_page_insists_on_entities_and_the_jsondata_slot(session):
+    doc = {t.name: t for t in session.tools}["edit_page"].description
+    assert "instance" in doc and "find_page_from_topic" in doc
+    assert "User:" in doc and ".js" in doc          # the exceptions
+    assert "Never put structured data into 'main'" in doc
+
+
+def test_progress_labels_stay_short_and_leak_nothing(session):
+    from osw_chatbot.toolcalling.progress import LABELS, MAX_ARG, summarize
+
+    assert summarize({"titles": ["Item:OSW123"], "include_html": True}) == "Item:OSW123"
+    assert summarize({"query": "x" * 500}).endswith("…")
+    assert len(summarize({"query": "x" * 500})) <= MAX_ARG
+    # every registered tool should have a human label
+    for name in EXPECTED_TOOLS:
+        if name not in ("multiply",):
+            assert name in LABELS, f"no progress label for {name}"
 
 
 def test_a_silent_browser_raises_instead_of_returning_none(session):

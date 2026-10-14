@@ -88,6 +88,7 @@ SYSTEM_TEXT = (
     "For mailto links use semicolons to separate multiple email addresses."
     "You also have web search tools. Use them whenever external or up to date information would help to answer, and do so directly instead of asking the user for permission first. The topic does not have to be related to this wiki - answer general questions too, guiding the user on the wiki is your main job, not your only one."
     "Edit pages only when the user requests it. Otherwise ask for confirmation first."
+    "This wiki stores things as structured entities, so create a device, event, person, project or sample as an instance of its category (find it with 'find_page_from_topic', read it with 'get_category_schema'), never as a plain wikitext page. The exceptions are the user's own 'User:<name>/...' subpages, '.js' and '.css' pages, and the main page."
 )
 
 
@@ -96,7 +97,10 @@ def build_prompt(extra: str = "") -> ChatPromptTemplate:
         [
             ("system", SYSTEM_TEXT + (("\n\n" + extra) if extra else "")),
             ("placeholder", "{chat_history}"),
-            ("human", "{input}"),
+            # A placeholder, not ("human", "{input}"): a string template
+            # stringifies a content list, so an attached image would reach the
+            # model as a python repr instead of an image block.
+            ("placeholder", "{input}"),
             ("placeholder", "{agent_scratchpad}"),
         ]
     )
@@ -362,8 +366,25 @@ class ChatSession:
             return text
 
         @langchain_core.tools.tool
+        async def upload_file(attachment_id: str, label: str = "") -> dict:
+            """Uploads a file the user attached to this chat into the wiki and returns its page title, e.g. 'File:OSW1234....png'. Use that title as the value of an entity's image or file property. The attachment id is given in the message that carried the attachment. Only upload when the user wants the file stored in the wiki - reading or describing an attachment needs no upload."""
+
+            return await session.call_client_side_tool("upload_file", [attachment_id, label])
+
+        @langchain_core.tools.tool
+        async def get_category_schema(category_page: str) -> dict:
+            """Returns the JSON schema of a category, i.e. which properties an instance of it can have and which are required. Read this before creating an instance so the data you write is valid and you use the right property names (the property holding a picture, for example, differs between categories)."""
+
+            return await session.call_client_side_tool("get_category_schema", [category_page])
+
+        @langchain_core.tools.tool
         async def edit_page(title: str, slots: Dict[str, Any], summary: str = "") -> dict:
             """Creates or edits a wiki page. Only the given slots are changed, everything else on the page stays as it is. A page title must contain the namespace (e.g. 'Category:', 'Item:' or 'User:').
+
+            Anything that is a thing - a device, an event, a person, a project, a sample, a method - is created as an *instance of its category*, not as a plain wikitext page: find the category with 'find_page_from_topic', read it with 'get_category_schema', then write an 'Item:OSW<uuid without dashes>' page whose 'jsondata' slot is {'type': ['Category:OSW...'], 'uuid': '<uuid>', 'label': [{'text': ..., 'lang': ...}], ...}.
+            The only pages that are plain wikitext or source are the user's own 'User:<name>/...' subpages, '.js'/'.css' pages, and the main page.
+
+            Never put structured data into 'main'. On Item: and Property: pages all structured content goes into the 'jsondata' slot and 'main' stays empty wikitext - JSON written to 'main' shows up as a wall of raw text, leaves the entity without data and makes it invisible to queries.
 
             `slots` maps a slot name to its content:
             - 'jsondata' and 'jsonschema': a JSON object (not a string).
@@ -393,21 +414,24 @@ class ChatSession:
                 raise ClientToolError(f"no skill named {name!r}. Available: {available}")
             return skill.body
 
-        # find_page_from_topic is deliberately not registered here - it was
-        # already missing from the tool list before this refactor, even though
-        # the MediaWiki extension implements it.
         tools = [
             multiply,
             where_am_i,
             highlight_html_element,
             redirect,
             full_text_search,
+            # the "user said 'device', find me the category" lookup - the
+            # extension has always implemented it, it was simply never
+            # registered, which left the model guessing at category titles
+            find_page_from_topic,
             create_category_instance,
+            get_category_schema,
             get_page_content,
             smw_ask_query,
             get_file_content,
             edit_page,
             delete_page,
+            upload_file,
         ]
         if session.skills:
             tools.append(load_skill)
@@ -417,10 +441,40 @@ class ChatSession:
 
     ## conversation
 
-    async def invoke(self, prompt):
+    @staticmethod
+    def _content(prompt, attachments):
+        """Build the human turn, with any attachment inlined as content blocks."""
+        if not attachments:
+            return prompt
+        blocks = []
+        notes = []
+        for att in attachments:
+            name, mime = att.get("name", "file"), att.get("mime") or "unknown type"
+            if att.get("error"):
+                notes.append(f"[attachment {name} could not be read: {att['error']}]")
+                continue
+            notes.append(
+                f"[attachment id={att.get('id')} name={name} type={mime} "
+                f"size={att.get('size')} - use upload_file with this id to put it "
+                "into the wiki]"
+            )
+            if att.get("preview"):
+                blocks.append(
+                    {"type": "image_url", "image_url": {"url": att["preview"]}}
+                )
+            elif att.get("text"):
+                notes.append(f"Content of {name}:\n{att['text']}")
+        return [{"type": "text", "text": "\n".join([prompt, *notes])}, *blocks]
+
+    async def invoke(self, prompt, attachments=None, callbacks=None):
         self.chat_history = trim_history(self.chat_history)
+        content = self._content(prompt, attachments)
         res = await self.agent_executor.ainvoke(
-            {"input": prompt, "chat_history": self.chat_history}
+            {
+                "input": [HumanMessage(content=content)],
+                "chat_history": self.chat_history,
+            },
+            config={"callbacks": list(callbacks)} if callbacks else None,
         )
         # Anthropic returns a list of content blocks where OpenAI returns a
         # string; the chat UI and the stored history both want plain text.

@@ -114,6 +114,47 @@ OpenSemanticLab pages keep structured data in **slots** next to the wikitext.
 `edit_page` sets the header/footer invokes for you when you write `jsondata`. Without them an
 entity renders blank.
 
+> **Never write structured data to `main` on `Item:`/`Property:` pages.** All structured
+> content lives in the `jsondata` slot; `main` stays empty wikitext (the invoke calls live in
+> `header`/`footer`). When reading a page back via an API or script (e.g.
+> `mwjson.api.getPage`), mutate only `page.slots.jsondata` and set only
+> `page.slots_changed.jsondata = true`.
+
+JSON in `main` is the mistake to watch for: the page then shows a wall of raw JSON, the
+entity has no data as far as the wiki is concerned, and no SMW query will find it.
+
+**Entities, not plain pages**
+
+Anything that *is* a thing - a device, an event, a person, a project, a sample, a method -
+belongs in the wiki as an instance of its category, never as a hand-written wikitext page.
+The procedure:
+
+1. `find_page_from_topic("device")` → the `Category:OSW…` the user means. Offer the choices
+   if several fit rather than picking one silently.
+2. `get_category_schema(category)` → the property names and which are required. The property
+   holding a picture is **not** always called `image`; read it, do not assume.
+3. Write `Item:OSW<uuid without dashes>` with a `jsondata` slot:
+
+```json
+{"type": ["Category:OSW..."], "uuid": "<uuid4>",
+ "label": [{"text": "Fluke 87V", "lang": "en"}],
+ "description": [{"text": "Handheld multimeter", "lang": "en"}],
+ "image": "File:OSW....jpg"}
+```
+
+The only pages that are plain wikitext or source: the user's own `User:<name>/…` subpages,
+`.js`/`.css` pages, and the main page.
+
+**Files**
+
+An uploaded file is an entity too - `upload_file` creates
+`File:OSW<uuid>.<ext>` as an instance of `Category:OSW11a53cdfbdc24524bf8ac435cbf65d9d`
+(Wiki File), whose jsondata carries `type`, `uuid`, a self-referencing `file` and a `label`
+taken from the original filename. Put the returned title into the entity's image property as
+a plain string; it renders through `Special:Redirect/file/`. Do **not** write
+`[[File:…|thumb]]` into `main` - that is the plain-wiki reflex and leaves the entity without
+a picture as far as the data model is concerned.
+
 **Schema conventions**
 
 - Give every inline sub-object (inside `items`, `properties`, `oneOf`) a meaningful, unique

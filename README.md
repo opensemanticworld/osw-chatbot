@@ -106,6 +106,27 @@ where configured, by a confirmation dialog shown in the browser *before* the too
 assistant cannot skip it. Refusals come back as a sentence the assistant relays rather than
 a traceback.
 
+#### Attachments
+
+A file dropped into the chat is **staged in the browser**: only metadata and, for images, a
+downscaled preview (~1568px long edge) go to the backend. The original crosses to the wiki
+page over postMessage and is uploaded there, so a phone photo never travels through the
+chatbot host or bokeh's 20 MB websocket limit. The preview doubles as the model's view of
+the image.
+
+`upload_file` stores the staged file as a `File:OSW<uuid>.<ext>` page, an instance of
+`Category:WikiFile`, and returns the title to use as an entity's image property. It is gated
+by the `upload` action, which is off by default. Attaching a file never writes to the wiki
+on its own - the assistant has to ask.
+
+#### Progress and the intro message
+
+Tool calls render as collapsed chat steps while they run ("Reading Item:OSW…", "Searching
+the web for …"), with arguments summarised - `where_am_i` carries a whole DOM and
+`get_page_content` returns kilobytes, neither of which belongs in the transcript. A new
+conversation opens with a short disclaimer (`CHATBOT_INTRO`), shown once and not repeated on
+a restored conversation.
+
 #### Skills
 
 `src/osw_chatbot/skills/*.md` are longer instruction sets the assistant pulls in on demand.
