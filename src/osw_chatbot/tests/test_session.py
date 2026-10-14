@@ -264,8 +264,11 @@ def test_skills_are_indexed_and_loadable(session):
     # the component skill has to carry the data APIs an app actually needs,
     # otherwise the model invents endpoints
     component = session.skills["mediawiki-component"].body
-    for needle in ("action: 'ask'", "rvslots", "postWithToken", "postProcessPage"):
+    for needle in ("action: 'ask'", "rvslots", "mwjson.api.updatePage", "postProcessPage"):
         assert needle in component, f"{needle} missing from mediawiki-component"
+    # Writing must go through mwjson, which fills the header/footer slots an
+    # entity needs - a raw action=edit leaves the page rendering empty.
+    assert "postWithToken" not in component
 
 
 def test_load_skill_rejects_an_unknown_name(session):

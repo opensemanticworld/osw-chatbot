@@ -115,34 +115,26 @@ api.get({
 
 ### Writing
 
-Preferred, because it handles the entity plumbing for you:
+**Always write through `mwjson.api`.** Do not post to `action=edit` / `action=editslots`
+yourself: an entity needs more than its `jsondata` slot - without the
+`{{#invoke:Entity|header}}` and `{{#invoke:Entity|footer}}` slots the page renders empty -
+and MwJson is what fills them in and stringifies the json slots correctly.
 
 ```js
 await mw.loader.using(['ext.mwjson.api', 'ext.OpenSemanticLab.forms']);
 var page = await mwjson.api.getPage(title);   // works for a page that does not exist yet
 page.slots.jsondata = jsondata;               // an object; MwJson stringifies json slots
 page.slots_changed.jsondata = true;
-await osl.util.postProcessPage(page, []);     // adds the header/footer invokes
+page = await osl.util.postProcessPage(page, []);  // fills the header/footer slots
 await mwjson.api.updatePage(page, { comment: 'MyComponent: changed status' });
 ```
+
+Create and edit are the same call - `getPage` on a page that does not exist yet returns a
+ready skeleton with `exists: false`.
 
 Always start from `getPage`: the save writes every slot it finds on the page object, so a
 hand-built one blanks the slots you did not set. `updatePage` rejects with an `Error`
 carrying `.code` and `.info`, and has already shown the user a notification.
-
-The plain action API also works and is fine for updating an existing entity:
-
-```js
-api.postWithToken('csrf', {
-    action: 'edit', title: title, slots: 'jsondata',
-    contentmodel: 'json', contentformat: 'application/json',
-    text: JSON.stringify(jsondata), summary: 'MyComponent: changed status'
-});
-```
-
-but it does **not** add the `{{#invoke:Entity|header}}` / `footer` slots, so an entity
-*created* this way renders as an empty page. Either use the MwJson path above for creation,
-or write those two slots yourself.
 
 ### Creating an entity
 
