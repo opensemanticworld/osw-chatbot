@@ -52,6 +52,29 @@ def summarize(raw) -> str:
     return text
 
 
+# Panel renders a step as a Card (.chat-steps) with a .step-header row, an
+# avatar column and a .step-title. The default is a full card with a 10px
+# inset - far too heavy for a status line in a ~210px popup. Flatten it to a
+# muted single line. Sizes are absolute because the stylesheet reaches every
+# nested component, so a relative font-size would compound.
+STEP_CSS = """
+.chat-steps {
+  margin-inline: 0 !important; border: none !important;
+  background: transparent !important; box-shadow: none !important;
+  padding: 0 !important;
+}
+.step-avatar-container { display: none !important; }
+.step-header {
+  padding: 1px 0 !important; min-height: 0 !important; gap: 5px !important;
+  align-items: center !important;
+}
+.step-title, .step-title p {
+  color: #9aa0a6 !important; font-size: 12px !important;
+  margin: 0 !important; line-height: 1.5 !important;
+}
+"""
+
+
 class ToolProgressHandler(AsyncCallbackHandler):
     """Renders one collapsed chat step per tool call."""
 
@@ -74,7 +97,14 @@ class ToolProgressHandler(AsyncCallbackHandler):
         try:
             step = self.instance.add_step(
                 pending_title=pending, success_title=done,
-                title=pending, collapsed=True, user="Assistant",
+                title=pending, collapsed=True,
+                # default_layout="card" wraps the steps in a Card titled
+                # "Steps", a full-width header that dwarfs the lines inside it;
+                # an empty user drops the duplicate "Assistant" label, since
+                # the answer right below carries one already.
+                default_layout="column", user="",
+                stylesheets=[STEP_CSS],
+                margin=0,
             )
         except Exception as e:  # noqa: BLE001 - progress must never break a turn
             print(f"osw-chatbot: could not add a progress step ({e})")

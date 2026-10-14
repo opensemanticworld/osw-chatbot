@@ -30,6 +30,35 @@ class AttachmentWidget(AnyWidgetComponent):
     text_preview_chars = param.Integer(default=20000)
     allowed_origins = param.List(default=["*"])
 
+    # Scoped to the widget's shadow root, so it cannot leak into the chat.
+    _stylesheets = ["""
+    .osw-attachments {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+      padding: 2px 0 4px 0; font-size: 12px; line-height: 1.4;
+    }
+    .osw-attach-button {
+      background: #2a2a2a; color: #ddd; border: 1px solid #444;
+      border-radius: 4px; padding: 3px 9px; cursor: pointer;
+      font-size: 13px; line-height: 1.2;
+    }
+    .osw-attach-button:hover { background: #383838; }
+    .osw-attachment-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .osw-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #2f2f2f; color: #c8c8c8; border: 1px solid #3d3d3d;
+      border-radius: 11px; padding: 1px 4px 1px 9px; max-width: 100%;
+    }
+    .osw-chip-name {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14ch;
+    }
+    .osw-chip-error { color: #ff8a80; }
+    .osw-chip-remove {
+      background: none; border: 0; color: #888; cursor: pointer;
+      padding: 0 3px; font-size: 13px; line-height: 1;
+    }
+    .osw-chip-remove:hover { color: #ddd; }
+    """]
+
     _esm = ORIGIN_JS + """
     const IMAGE = /^image\\//;
     const TEXTISH = /^text\\/|json|csv|xml|yaml|markdown/;
@@ -63,6 +92,7 @@ class AttachmentWidget(AnyWidgetComponent):
       bar.className = "osw-attachments";
       const button = document.createElement("button");
       button.type = "button";
+      button.className = "osw-attach-button";
       button.textContent = "📎";
       button.title = "Attach a file";
       const input = document.createElement("input");
@@ -88,7 +118,24 @@ class AttachmentWidget(AnyWidgetComponent):
       function publish() {
         model.set("attachments", [...staged.values()].map(s => s.meta));
         model.save_changes();
-        chips.textContent = [...staged.values()].map(s => s.meta.name).join(", ");
+        chips.textContent = "";
+        for (const entry of staged.values()) {
+          const meta = entry.meta;
+          const chip = document.createElement("span");
+          chip.className = "osw-chip";
+          const name = document.createElement("span");
+          name.className = "osw-chip-name" + (meta.error ? " osw-chip-error" : "");
+          name.textContent = meta.name;
+          name.title = meta.error ? meta.name + " - " + meta.error : meta.name;
+          const remove = document.createElement("button");
+          remove.className = "osw-chip-remove";
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.title = "Remove";
+          remove.onclick = () => { staged.delete(meta.id); publish(); };
+          chip.appendChild(name); chip.appendChild(remove);
+          chips.appendChild(chip);
+        }
       }
 
       async function addFiles(files) {

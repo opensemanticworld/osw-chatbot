@@ -98,6 +98,7 @@ def build_app():
     attachments = AttachmentWidget(
         allowed_origins=PARENT_ORIGINS,
         max_bytes=ATTACHMENT_MAX_BYTES,
+        sizing_mode="stretch_width",
         margin=0,
     )
     sent_attachments = set()
@@ -133,7 +134,7 @@ def build_app():
         # clears the widget, this session's memory and the stored history
         show_clear=True,
         show_button_name=False,
-        sizing_mode="stretch_width",
+        sizing_mode="stretch_both",
         callback_exception="verbose",
         # show_avatar / show_timestamp / show_reaction_icons are ChatMessage
         # params, not ChatInterface ones - passed directly they are silently
@@ -197,7 +198,10 @@ def build_app():
     except Exception as e:  # noqa: BLE001
         print(f"osw-chatbot: no session teardown hook available ({e})")
 
-    return pn.Column(chat_bot, attachments, session.frontend, store)
+    return pn.Column(
+        chat_bot, attachments, session.frontend, store,
+        sizing_mode="stretch_both",
+    )
 
 
 if __name__ == "__main__":
