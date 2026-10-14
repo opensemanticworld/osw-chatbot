@@ -261,6 +261,12 @@ def test_skills_are_indexed_and_loadable(session):
     assert "'''bold'''" in body and "**bold**" in body
     assert "format=datatables" in body
 
+    # the component skill has to carry the data APIs an app actually needs,
+    # otherwise the model invents endpoints
+    component = session.skills["mediawiki-component"].body
+    for needle in ("action: 'ask'", "rvslots", "postWithToken", "postProcessPage"):
+        assert needle in component, f"{needle} missing from mediawiki-component"
+
 
 def test_load_skill_rejects_an_unknown_name(session):
     tool = {t.name: t for t in session.tools}["load_skill"]

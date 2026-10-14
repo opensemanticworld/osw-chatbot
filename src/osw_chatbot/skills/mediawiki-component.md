@@ -55,7 +55,8 @@ The script must:
 - be wrapped in an IIFE and use `'use strict';`
 - start only once the DOM is available
 - find all containers via `document.querySelectorAll('.<Name>')`
-- guard against double initialization
+- guard against double initialization - the loader can fire twice on a page, so start with
+  `if (window.__<Name>Initialized) return; window.__<Name>Initialized = true;`
 - show understandable error messages
 - avoid conflicts with other MediaWiki scripts and create no unnecessary globals
 - be responsive and reasonably accessible, on current desktop and mobile browsers
@@ -70,7 +71,116 @@ whether there are privacy, security or permission implications.
 Never emit placeholders: no `...`, no "rest as before", no "add more code here". Every file
 complete and directly usable.
 
-## 3. Output
+## 3. Working with wiki data
+
+Most components read or write OpenSemanticLab entities. These are the patterns that work -
+use them rather than inventing endpoints. `var api = new mw.Api();` throughout.
+
+### Finding instances: the SMW ask API
+
+```js
+// conditions and parameters are ONE string, like an inline {{#ask:}}
+var query = '[[Category:OSWc5d4829ed2744a219ba027171c75fa1d]]|?HasStatus|?Description|limit=500';
+api.get({ action: 'ask', query: query, format: 'json' }).then(function (data) {
+    var results = (data && data.query && data.query.results) || {};
+    Object.keys(results).forEach(function (title) {       // keyed by page title
+        var entry = results[title];
+        var label = entry.displaytitle || title;
+        var status = (entry.printouts.HasStatus || [])[0];  // printouts are ARRAYS
+        var statusTitle = status ? status.fulltext : null;  // page values have .fulltext
+    });
+});
+```
+
+Three things that trip people up: the result set is an **object keyed by title**, not an
+array; every printout is an **array** even for single values; and a printout that points at
+a page is an object with `fulltext`/`fullurl`, while literals come back as plain strings or
+numbers. `limit=` goes **inside** the query string.
+
+### Reading a page's structured data
+
+Entity data lives in the `jsondata` slot, and the API returns it as a **string**:
+
+```js
+api.get({
+    action: 'query', prop: 'revisions', rvprop: 'content',
+    rvslots: 'jsondata', titles: title, format: 'json'
+}).then(function (data) {
+    var pages = data.query.pages;
+    var page = pages[Object.keys(pages)[0]];
+    var slot = page.revisions && page.revisions[0].slots.jsondata;
+    return slot ? JSON.parse(slot['*']) : null;
+});
+```
+
+### Writing
+
+Preferred, because it handles the entity plumbing for you:
+
+```js
+await mw.loader.using(['ext.mwjson.api', 'ext.OpenSemanticLab.forms']);
+var page = await mwjson.api.getPage(title);   // works for a page that does not exist yet
+page.slots.jsondata = jsondata;               // an object; MwJson stringifies json slots
+page.slots_changed.jsondata = true;
+await osl.util.postProcessPage(page, []);     // adds the header/footer invokes
+await mwjson.api.updatePage(page, { comment: 'MyComponent: changed status' });
+```
+
+Always start from `getPage`: the save writes every slot it finds on the page object, so a
+hand-built one blanks the slots you did not set. `updatePage` rejects with an `Error`
+carrying `.code` and `.info`, and has already shown the user a notification.
+
+The plain action API also works and is fine for updating an existing entity:
+
+```js
+api.postWithToken('csrf', {
+    action: 'edit', title: title, slots: 'jsondata',
+    contentmodel: 'json', contentformat: 'application/json',
+    text: JSON.stringify(jsondata), summary: 'MyComponent: changed status'
+});
+```
+
+but it does **not** add the `{{#invoke:Entity|header}}` / `footer` slots, so an entity
+*created* this way renders as an empty page. Either use the MwJson path above for creation,
+or write those two slots yourself.
+
+### Creating an entity
+
+```js
+var uuid = crypto.randomUUID();                      // or a uuid4 helper
+var pageTitle = 'Item:OSW' + uuid.replace(/-/g, '');  // OSW-ID = OSW + uuid, no dashes
+var jsondata = {
+    type: ['Category:OSW...'],                        // the category being instantiated
+    uuid: uuid,
+    label: [{ text: label, lang: mw.config.get('wgUserLanguage') || 'en' }]
+};
+```
+
+### Labels are multilingual
+
+`label` and `description` are arrays of `{text, lang}`. Pick the user's language, fall back
+to English, then to the first entry - never just `label[0].text`:
+
+```js
+function pickText(list, fallback) {
+    if (!Array.isArray(list) || !list.length) return fallback || '';
+    var lang = mw.config.get('wgUserLanguage') || 'en';
+    var m = list.find(function (e) { return e.lang === lang; })
+         || list.find(function (e) { return e.lang === 'en'; })
+         || list[0];
+    return (m && m.text) || fallback || '';
+}
+```
+
+### Useful context
+
+`mw.config.get(...)`: `wgUserName`, `wgUserLanguage`, `wgPageName`, `wgScriptPath`,
+`wgArticlePath`. Build links with `mw.util.getUrl(title)`. A failed `mw.Api` call rejects
+with `(code, data)` - show `data.error.info` to the user rather than failing silently.
+
+Escape anything that came from the wiki before putting it into `innerHTML`, labels included.
+
+## 4. Output
 
 **A. Short description** - what it does, how it is operated, what it needs.
 
@@ -92,7 +202,8 @@ if (document.querySelector('.<Name>')) {
 Substitute the real user and script name. Keep the shape: the `querySelector` check, a
 readable `console.log`, `mw.loader.load`, and the raw URL with
 `action=raw&ctype=text/javascript`. Output only the block to append - never invent a whole
-`common.js`.
+`common.js`. One `common.js` holds one such block per component, so append rather than
+replace, and keep any blocks that are already there.
 
 **D. The page snippet**, in an HTML code block:
 
