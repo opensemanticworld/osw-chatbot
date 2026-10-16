@@ -145,6 +145,36 @@ The procedure:
 The only pages that are plain wikitext or source: the user's own `User:<name>/…` subpages,
 `.js`/`.css` pages, and the main page.
 
+**Reference fields are not free text**
+
+A property with `"format": "autocomplete"` - usually carrying a `range`,
+`subclassof_range` and/or an `options.autocomplete.query` - holds a **page title**, never a
+label or a phrase:
+
+```json
+"status": "Item:OSWaa8d29404288446a9f3ec7afa4e2a512"     ✓
+"status": "in progress"                                   ✗ nothing can resolve this
+"manufacturer": "Item:OSW1234..."                         ✓
+"manufacturer": "Fluke"                                   ✗
+```
+
+The format is `<Namespace>:OSW<uuid without hyphens>` - `Item:`, `Category:`, `Property:`,
+`File:` as appropriate.
+
+Always honour the constraint on the field; a title that exists but is out of range is just
+as wrong as free text:
+
+* `range: Category:OSW…` - the value must be an instance of that category.
+* `subclassof_range: Category:OSW…` - the value must be a **subclass** of it. The category
+  itself is not included (see the undocumented behaviours below).
+* `options.autocomplete.query` - run that query with `smw_ask_query` and choose from its
+  results. It is the definitive list of what the field accepts.
+
+So: read the schema, resolve the value to a real page (`find_page_from_topic`,
+`smw_ask_query`, `full_text_search`), and check it satisfies the constraint. If nothing
+suitable exists, ask the user or create the referenced entity first - never invent an OSW-ID
+and never fall back to a plain string.
+
 **Files**
 
 An uploaded file is an entity too - `upload_file` creates

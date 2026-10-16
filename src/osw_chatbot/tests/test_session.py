@@ -269,6 +269,9 @@ def test_skills_are_indexed_and_loadable(session):
     # otherwise the model invents endpoints
     # the entity-first rule and the slot trap the model actually fell into
     assert "Never write structured data to `main`" in body
+    # reference fields: the model kept writing labels into autocomplete slots
+    assert "format\": \"autocomplete\"" in body or "autocomplete" in body
+    assert "subclassof_range" in body and "uuid without hyphens" in body
     assert "find_page_from_topic" in body and "Wiki File" in body
 
     component = session.skills["mediawiki-component"].body
@@ -334,6 +337,7 @@ def test_edit_page_insists_on_entities_and_the_jsondata_slot(session):
     assert "instance" in doc and "find_page_from_topic" in doc
     assert "User:" in doc and ".js" in doc          # the exceptions
     assert "Never put structured data into 'main'" in doc
+    assert "autocomplete" in doc and "not free text" in doc
 
 
 def test_progress_labels_stay_short_and_leak_nothing(session):

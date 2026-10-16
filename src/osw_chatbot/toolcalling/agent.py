@@ -384,6 +384,8 @@ class ChatSession:
             Anything that is a thing - a device, an event, a person, a project, a sample, a method - is created as an *instance of its category*, not as a plain wikitext page: find the category with 'find_page_from_topic', read it with 'get_category_schema', then write an 'Item:OSW<uuid without dashes>' page whose 'jsondata' slot is {'type': ['Category:OSW...'], 'uuid': '<uuid>', 'label': [{'text': ..., 'lang': ...}], ...}.
             The only pages that are plain wikitext or source are the user's own 'User:<name>/...' subpages, '.js'/'.css' pages, and the main page.
 
+            Properties with "format": "autocomplete" (usually with a "range", "subclassof_range" or an autocomplete "query") are references, not free text: their value is a page title like 'Item:OSW<uuid without hyphens>', and it must satisfy that range or query. Resolve it to a real page first - never write a label or an invented id into such a field.
+
             Never put structured data into 'main'. On Item: and Property: pages all structured content goes into the 'jsondata' slot and 'main' stays empty wikitext - JSON written to 'main' shows up as a wall of raw text, leaves the entity without data and makes it invisible to queries.
 
             `slots` maps a slot name to its content:
