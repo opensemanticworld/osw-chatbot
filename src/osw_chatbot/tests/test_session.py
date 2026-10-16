@@ -340,6 +340,48 @@ def test_edit_page_insists_on_entities_and_the_jsondata_slot(session):
     assert "autocomplete" in doc and "not free text" in doc
 
 
+def test_progress_summaries_say_something_useful():
+    """A summary that reports only a byte count tells the user nothing."""
+    from osw_chatbot.toolcalling.progress import MAX_DETAIL, describe
+
+    page_query = {"query": {"pages": {"1": {
+        "title": "Item:OSW123",
+        "revisions": [{"slots": {"main": {}, "jsondata": {}, "header": {}}}],
+    }}}}
+    got = describe("get_page_content", page_query)
+    assert "Item:OSW123" in got and "jsondata" in got
+
+    schema = {"id": "x", "allOf": [
+        {"properties": {"label": {}, "description": {}}},
+        {"properties": {"image": {}, "manufacturer": {}}},
+    ], "required": ["label"]}
+    got = describe("get_category_schema", schema)
+    assert "4 properties" in got and "label" in got and "required" in got
+
+    assert "2 results" in describe(
+        "smw_ask_query", {"query": {"results": {"Item:A": {}, "Item:B": {}}}})
+    assert "2 matches" in describe(
+        "find_page_from_topic", [{"label": "Device"}, {"label": "Sensor"}])
+    assert "Item:OSW999" in describe(
+        "edit_page", {"ok": True, "title": "Item:OSW999", "slots": ["jsondata"]})
+
+    # where_am_i hands back a pydantic model, not a dict
+    from osw_chatbot.toolcalling.agent import WebPage
+
+    got = describe("where_am_i", WebPage(
+        url="https://w/x", title="Harness page", content="<html/>",
+        user={"id": "Alice", "name": "Alice"}))
+    assert "Harness page" in got and "Alice" in got and "<html" not in got
+
+    # refusals keep showing why
+    assert "no permission" in describe(
+        "edit_page", {"ok": False, "code": "permissiondenied", "message": "no permission"})
+
+    # and nothing ever grows unbounded or pastes markup in
+    long = describe("get_file_content", "<html>" + "x" * 5000)
+    assert len(long) <= MAX_DETAIL and "<html" not in long
+
+
 def test_progress_labels_stay_short_and_leak_nothing(session):
     from osw_chatbot.toolcalling.progress import LABELS, MAX_ARG, summarize
 

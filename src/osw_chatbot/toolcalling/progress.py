@@ -85,27 +85,112 @@ STEP_CSS = """
 """
 
 
-def describe(output) -> str:
-    """What a tool returned, in one line.
+MAX_DETAIL = 180
 
-    Shape over content: `get_page_content` and `where_am_i` return kilobytes of
-    page markup, and the step is a status line, not a transcript of the wiki.
+
+def _clip(items, limit=4):
+    items = [str(i) for i in items if i]
+    shown = ", ".join(items[:limit])
+    rest = len(items) - limit
+    return shown + (f" +{rest} more" if rest > 0 else "")
+
+
+def _page_titles(data):
+    pages = ((data.get("query") or {}).get("pages") or {}) if isinstance(data, dict) else {}
+    return [p.get("title") for p in pages.values() if isinstance(p, dict)]
+
+
+def _schema_properties(schema, seen=None):
+    """Property names of a category schema, which hides them under allOf."""
+    if not isinstance(schema, dict) or (seen is not None and id(schema) in seen):
+        return []
+    seen = seen or set()
+    seen.add(id(schema))
+    names = list(schema.get("properties") or {})
+    for part in schema.get("allOf") or []:
+        names += _schema_properties(part, seen)
+    return names
+
+
+def describe(name, output) -> str:
+    """What a tool returned, in one useful line.
+
+    Per tool, because the generic answer is worthless: the interesting part of
+    a page query is which pages came back, and of a schema which properties it
+    has - not that the payload was 10451 characters long.
     """
-    if isinstance(output, dict):
-        if output.get("ok") is False:
-            return str(output.get("message") or output.get("code") or "failed")
-        return "returned " + ", ".join(list(output)[:6])
-    if isinstance(output, (list, tuple)):
-        return f"returned {len(output)} item{'s' if len(output) != 1 else ''}"
-    fields = getattr(type(output), "model_fields", None)   # pydantic result
-    if fields:
-        return "returned " + ", ".join(list(fields)[:6])
+    try:
+        detail = _describe(name, output)
+    except Exception:  # noqa: BLE001 - a summary must never break a turn
+        detail = ""
+    if not detail:
+        detail = "done"
+    return detail[: MAX_DETAIL - 1] + "…" if len(detail) > MAX_DETAIL else detail
 
-    text = str(output)
-    if len(text) > 200:
-        return f"returned {len(text)} characters"
-    # short results are worth showing, with markup defanged
-    return " ".join(text.replace("<", "‹").split()) or "done"
+
+def _describe(name, output):
+    # the write tools report refusals as data
+    if isinstance(output, dict) and output.get("ok") is False:
+        return str(output.get("message") or output.get("code") or "failed")
+
+    if name == "where_am_i":
+        title = getattr(output, "title", None) or (output or {}).get("title")
+        user = getattr(output, "user", None) or (output or {}).get("user") or {}
+        who = (user or {}).get("name") or (user or {}).get("id")
+        return f"{title}" + (f", as {who}" if who else "")
+
+    if name == "get_page_content":
+        titles = _page_titles(output)
+        pages = ((output.get("query") or {}).get("pages") or {}).values()
+        slots = []
+        for page in pages:
+            revisions = page.get("revisions") or [{}]
+            slots = list((revisions[0] or {}).get("slots") or {})
+            break
+        got = _clip(titles)
+        return f"{got}" + (f" - slots: {_clip(slots, 6)}" if slots else "") or "no page"
+
+    if name == "get_category_schema":
+        props = _schema_properties(output)
+        required = (output or {}).get("required") or []
+        out = f"{len(props)} properties: {_clip(props, 6)}"
+        return out + (f" - required: {_clip(required, 4)}" if required else "")
+
+    if name == "smw_ask_query":
+        results = ((output or {}).get("query") or {}).get("results") or {}
+        return f"{len(results)} result{'s' if len(results) != 1 else ''}: {_clip(list(results))}"
+
+    if name == "find_page_from_topic" and isinstance(output, list):
+        return f"{len(output)} match{'es' if len(output) != 1 else ''}: " + _clip(
+            [f"{r.get('label') or r.get('title')}" for r in output if isinstance(r, dict)]
+        )
+
+    if name in ("edit_page", "delete_page", "upload_file") and isinstance(output, dict):
+        title = output.get("title") or ""
+        extra = output.get("slots") or []
+        return f"{title}" + (f" - slots: {_clip(extra, 6)}" if extra else "")
+
+    if name == "full_text_search" and isinstance(output, str):
+        hits = output.count("<li")
+        return f"{hits} result{'s' if hits != 1 else ''}" if hits else "no results"
+
+    if name == "load_skill" and isinstance(output, str):
+        return f"{len(output)} characters of instructions"
+
+    # web search returns a pydantic result with a list of hits
+    results = getattr(output, "results", None)
+    if isinstance(results, list):
+        return f"{len(results)} result{'s' if len(results) != 1 else ''}: " + _clip(
+            [getattr(r, "title", None) or getattr(r, "url", "") for r in results]
+        )
+
+    if isinstance(output, (list, tuple)):
+        return f"{len(output)} item{'s' if len(output) != 1 else ''}"
+    if isinstance(output, dict):
+        return _clip(list(output), 6)
+
+    text = " ".join(str(output).replace("<", "‹").split())
+    return text
 
 
 class ToolProgressHandler(AsyncCallbackHandler):
@@ -149,22 +234,23 @@ class ToolProgressHandler(AsyncCallbackHandler):
         except Exception as e:  # noqa: BLE001 - progress must never break a turn
             print(f"osw-chatbot: could not add a progress step ({e})")
             return
-        self._steps[run_id] = step
+        # the name is only known here, but the summary needs it at the end
+        self._steps[run_id] = (step, name)
 
     async def on_tool_end(self, output, *, run_id=None, **kwargs):
-        step = self._steps.pop(run_id, None)
+        step, name = self._steps.pop(run_id, (None, ""))
         if step is None:
             return
         # A refused write comes back as an observation rather than an error,
         # so look for it here too - otherwise a failure renders as success.
         text = str(output)
         failed = text.startswith("Error:") or "do not have permission" in text
-        self._fin(step, "failed" if failed else "success", describe(output))
+        self._fin(step, "failed" if failed else "success", describe(name, output))
 
     async def on_tool_error(self, error, *, run_id=None, **kwargs):
-        step = self._steps.pop(run_id, None)
+        step, _ = self._steps.pop(run_id, (None, ""))
         if step is not None:
-            self._fin(step, "failed", str(error)[:200])
+            self._fin(step, "failed", str(error)[:MAX_DETAIL])
 
     @staticmethod
     def _fin(step, status, detail=""):
