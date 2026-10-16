@@ -345,11 +345,21 @@ def test_progress_summaries_say_something_useful():
     from osw_chatbot.toolcalling.progress import MAX_DETAIL, describe
 
     page_query = {"query": {"pages": {"1": {
-        "title": "Item:OSW123",
-        "revisions": [{"slots": {"main": {}, "jsondata": {}, "header": {}}}],
+        "title": "Item:OSW0024d7c0a0d64642bf51f5facfe85d42",
+        "revisions": [{"slots": {
+            "main": {}, "header": {},
+            "jsondata": {"*": json.dumps({"label": [{"text": "Fluke 87V"}]})},
+        }}],
     }}}}
     got = describe("get_page_content", page_query)
-    assert "Item:OSW123" in got and "jsondata" in got
+    # label when it is known, and the id shortened rather than 32 hex digits
+    assert got.startswith("Fluke 87V (Item:OSW0024d7c0…)"), got
+    assert "jsondata" in got
+
+    # no label available - just the id
+    bare = describe("get_page_content", {"query": {"pages": {"1": {
+        "title": "Item:OSW0024d7c0a0d64642bf51f5facfe85d42", "revisions": [{"slots": {}}]}}}})
+    assert bare == "Item:OSW0024d7c0…", bare
 
     schema = {"id": "x", "allOf": [
         {"properties": {"label": {}, "description": {}}},
@@ -358,8 +368,13 @@ def test_progress_summaries_say_something_useful():
     got = describe("get_category_schema", schema)
     assert "4 properties" in got and "label" in got and "required" in got
 
-    assert "2 results" in describe(
-        "smw_ask_query", {"query": {"results": {"Item:A": {}, "Item:B": {}}}})
+    got = describe("smw_ask_query", {"query": {"results": {
+        "Item:OSWaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {"displaytitle": "Multimeter"},
+        "Item:OSWbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {},
+    }}})
+    assert "2 results" in got and "Multimeter (Item:OSWaaaaaaaa…)" in got
+    assert "Item:OSWbbbbbbbb…" in got      # unlabelled falls back to the id
+
     assert "2 matches" in describe(
         "find_page_from_topic", [{"label": "Device"}, {"label": "Sensor"}])
     assert "Item:OSW999" in describe(

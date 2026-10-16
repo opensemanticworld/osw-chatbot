@@ -9,6 +9,8 @@ the whole DOM and `get_page_content` returns kilobytes, none of which belongs
 in the transcript.
 """
 
+import json
+
 from langchain_core.callbacks import AsyncCallbackHandler
 
 MAX_ARG = 60
@@ -95,6 +97,34 @@ def _clip(items, limit=4):
     return shown + (f" +{rest} more" if rest > 0 else "")
 
 
+def short_id(title):
+    """'Item:OSW0024d7c0a0d6...' - an OSW-ID in full is 32 hex digits of noise."""
+    title = str(title or "")
+    head, sep, rest = title.rpartition("OSW")
+    if sep and len(rest) > 10:
+        return f"{head}OSW{rest[:8]}…"
+    return title
+
+
+def named(title, label=None):
+    """`label (OSW123…)` when the label is known, plain id when it is not."""
+    short = short_id(title)
+    label = str(label or "").strip()
+    return f"{label} ({short})" if label and label != title else short
+
+
+def _json_label(page):
+    """The entity label out of a page's jsondata slot, if it has one."""
+    revisions = (page or {}).get("revisions") or [{}]
+    slot = ((revisions[0] or {}).get("slots") or {}).get("jsondata") or {}
+    raw = slot.get("*")
+    if not raw:
+        return None
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    labels = (data or {}).get("label") or []
+    return labels[0].get("text") if labels and isinstance(labels[0], dict) else None
+
+
 def _page_titles(data):
     pages = ((data.get("query") or {}).get("pages") or {}) if isinstance(data, dict) else {}
     return [p.get("title") for p in pages.values() if isinstance(p, dict)]
@@ -140,15 +170,16 @@ def _describe(name, output):
         return f"{title}" + (f", as {who}" if who else "")
 
     if name == "get_page_content":
-        titles = _page_titles(output)
-        pages = ((output.get("query") or {}).get("pages") or {}).values()
-        slots = []
+        pages = list(((output.get("query") or {}).get("pages") or {}).values())
+        if not pages:
+            return "no page"
+        shown, slots = [], []
         for page in pages:
-            revisions = page.get("revisions") or [{}]
-            slots = list((revisions[0] or {}).get("slots") or {})
-            break
-        got = _clip(titles)
-        return f"{got}" + (f" - slots: {_clip(slots, 6)}" if slots else "") or "no page"
+            shown.append(named(page.get("title"), _json_label(page)))
+            if not slots:
+                revisions = page.get("revisions") or [{}]
+                slots = list((revisions[0] or {}).get("slots") or {})
+        return _clip(shown, 3) + (f" - slots: {_clip(slots, 6)}" if slots else "")
 
     if name == "get_category_schema":
         props = _schema_properties(output)
@@ -158,17 +189,24 @@ def _describe(name, output):
 
     if name == "smw_ask_query":
         results = ((output or {}).get("query") or {}).get("results") or {}
-        return f"{len(results)} result{'s' if len(results) != 1 else ''}: {_clip(list(results))}"
+        shown = [
+            named(title, (entry or {}).get("displaytitle"))
+            for title, entry in list(results.items())[:4]
+        ]
+        return f"{len(results)} result{'s' if len(results) != 1 else ''}: " + _clip(shown)
 
     if name == "find_page_from_topic" and isinstance(output, list):
-        return f"{len(output)} match{'es' if len(output) != 1 else ''}: " + _clip(
-            [f"{r.get('label') or r.get('title')}" for r in output if isinstance(r, dict)]
-        )
+        shown = [
+            named(r.get("title"), r.get("label") or r.get("displaytitle"))
+            for r in output if isinstance(r, dict)
+        ]
+        return f"{len(output)} match{'es' if len(output) != 1 else ''}: " + _clip(shown)
 
     if name in ("edit_page", "delete_page", "upload_file") and isinstance(output, dict):
-        title = output.get("title") or ""
+        # upload_file hands back the original filename as the label
+        shown = named(output.get("title") or "", output.get("name"))
         extra = output.get("slots") or []
-        return f"{title}" + (f" - slots: {_clip(extra, 6)}" if extra else "")
+        return shown + (f" - slots: {_clip(extra, 6)}" if extra else "")
 
     if name == "full_text_search" and isinstance(output, str):
         hits = output.count("<li")

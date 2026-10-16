@@ -398,8 +398,13 @@ def run(args):
             ok, detail = False, ""
             # The assistant is told to confirm before editing, so it may well
             # ask first - a user would then say yes. Allow one such exchange.
-            for prompt in ("Use the edit_page tool now to put the text 'hello' into the "
-                           "main slot of the page Item:OSWtest.",
+            # A user subpage on purpose: the assistant is told that entities
+            # belong in a category instance and that an Item's main slot stays
+            # empty, so asking it to write wikitext into Item:X now - rightly -
+            # makes it argue instead of calling the tool.
+            for prompt in ("Use the edit_page tool now to put the wikitext "
+                           "'== Notes ==' into the main slot of the page "
+                           "User:Alice/Notes.",
                            "Yes, go ahead and do it now."):
                 try:
                     send_prompt(page, PANE_A, prompt, args.timeout)
