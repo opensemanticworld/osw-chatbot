@@ -139,6 +139,12 @@ class ChatSession:
         )
         self._timeout = tool_timeout or CLIENT_TOOL_TIMEOUT
         self._pending: Dict[str, asyncio.Future] = {}
+        # `function_call` is a single param slot. When the model returns
+        # several tool calls in one turn the executor runs them concurrently,
+        # and a second assignment replaces the first before bokeh has synced
+        # it - the browser never sees that call and it times out. One at a
+        # time; the browser is a single user interface anyway.
+        self._browser = asyncio.Lock()
         self._closed = False
         self.frontend.param.watch(self._on_function_called, "function_called")
 
@@ -203,22 +209,28 @@ class ChatSession:
         if self._closed:
             raise ClientToolError("the chat session was closed")
 
-        call_id = str(uuid.uuid4())
-        future = asyncio.get_running_loop().create_future()
-        self._pending[call_id] = future
-        # json round trip: a fresh object so param detects the change, and it
-        # fails loudly here rather than during serialization to the browser.
-        self.frontend.function_call = json.loads(
-            json.dumps({"type": "function_call", "id": call_id, "name": name, "args": args})
-        )
-        try:
-            result = await asyncio.wait_for(future, timeout or self._timeout)
-        except asyncio.TimeoutError:
-            raise ClientToolError(
-                f"the browser did not answer '{name}' within {timeout or self._timeout}s"
-            ) from None
-        finally:
-            self._pending.pop(call_id, None)
+        # One call in flight at a time - see the lock's definition.
+        async with self._browser:
+            if self._closed:
+                raise ClientToolError("the chat session was closed")
+            call_id = str(uuid.uuid4())
+            future = asyncio.get_running_loop().create_future()
+            self._pending[call_id] = future
+            # json round trip: a fresh object so param detects the change, and
+            # it fails loudly here rather than during serialization.
+            self.frontend.function_call = json.loads(
+                json.dumps({"type": "function_call", "id": call_id,
+                            "name": name, "args": args})
+            )
+            try:
+                result = await asyncio.wait_for(future, timeout or self._timeout)
+            except asyncio.TimeoutError:
+                raise ClientToolError(
+                    f"the browser did not answer '{name}' within "
+                    f"{timeout or self._timeout}s"
+                ) from None
+            finally:
+                self._pending.pop(call_id, None)
 
         if result is None:
             raise ClientToolError(f"'{name}' returned no result")

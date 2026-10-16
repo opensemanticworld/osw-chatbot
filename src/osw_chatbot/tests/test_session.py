@@ -409,6 +409,37 @@ def test_progress_labels_stay_short_and_leak_nothing(session):
             assert name in LABELS, f"no progress label for {name}"
 
 
+def test_concurrent_tool_calls_do_not_overwrite_each_other(session):
+    """The model can return several tool calls in one turn.
+
+    `function_call` is a single param slot, so without serialisation the second
+    assignment replaces the first before bokeh syncs it and that call is never
+    delivered - which looks like a browser timeout.
+    """
+    async def scenario():
+        seen = []
+        session.frontend.param.watch(
+            lambda e: seen.append((e.new or {}).get("id")), "function_call")
+
+        first = asyncio.ensure_future(
+            session.call_client_side_tool("get_page_content", [["A"]], timeout=5))
+        second = asyncio.ensure_future(
+            session.call_client_side_tool("get_page_content", [["B"]], timeout=5))
+        await asyncio.sleep(0.05)
+
+        # only the first one has been handed to the browser
+        assert len(seen) == 1, seen
+        session.frontend.function_called = {"id": seen[0], "result": "first"}
+        await asyncio.sleep(0.05)
+        # ...and the second follows once the first is answered
+        assert len(seen) == 2, seen
+        session.frontend.function_called = {"id": seen[1], "result": "second"}
+        assert await first == "first"
+        assert await second == "second"
+
+    asyncio.run(scenario())
+
+
 def test_a_silent_browser_raises_instead_of_returning_none(session):
     from osw_chatbot.toolcalling.agent import ClientToolError
 

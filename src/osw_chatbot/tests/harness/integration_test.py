@@ -361,6 +361,19 @@ def run(args):
                 f"pane B log: {log_b[-300:]}",
             )
 
+            ## 5a0. links render as links
+
+            # panel was pinned at 1.7.4 because a newer release "may have
+            # issues with link formating"; the assistant is told to answer with
+            # html anchors, so check they are anchors and not escaped text.
+            try:
+                chat_frame(page, PANE_A).locator("a[href]").first.wait_for(
+                    state="attached", timeout=args.timeout)
+                ok, detail = True, ""
+            except Exception as e:
+                ok, detail = False, str(e)[:120]
+            check("links in answers render as anchors", ok, detail)
+
             ## 5a. the tool call is visible in the chat while it runs
 
             frame_a = chat_frame(page, PANE_A)
