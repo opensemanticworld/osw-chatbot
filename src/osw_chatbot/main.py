@@ -105,7 +105,11 @@ def build_app():
         allowed_origins=PARENT_ORIGINS,
         max_bytes=ATTACHMENT_MAX_BYTES,
         sizing_mode="stretch_width",
-        margin=0,
+        # Line the bar up with the message input (x=15) instead of letting it
+        # sit flush against the frame. The negative top pulls it under the
+        # input row: the ChatInterface card keeps ~34px of slack below that
+        # row, which would otherwise leave the bar floating in the middle.
+        margin=(-26, 15, 6, 15),
     )
     sent_attachments = set()
 
