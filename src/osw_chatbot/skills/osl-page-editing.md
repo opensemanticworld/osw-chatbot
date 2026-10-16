@@ -145,6 +145,18 @@ The procedure:
 The only pages that are plain wikitext or source: the user's own `User:<name>/…` subpages,
 `.js`/`.css` pages, and the main page.
 
+**Write it yourself; use the form editor sparingly.** `edit_page` creates the instance
+headlessly and can be repeated - ten keywords in a row are ten quiet writes.
+`create_category_instance` opens a modal form for the user to review, which is right when
+the category has required fields you cannot infer, and wrong for an entity whose only real
+field is a label.
+
+The editor returns as soon as it is open, so the user has as long as they want to check the
+fields - but the page does not exist until they save, so never report it as created. **Only
+one editor can be open at a time**: opening a second while the first is still open does not
+work. Open one, say what to do with it, and either write the rest with `edit_page` or wait
+for the user to save before offering the next.
+
 **Reference fields are not free text**
 
 A property with `"format": "autocomplete"` - usually carrying a `range`,

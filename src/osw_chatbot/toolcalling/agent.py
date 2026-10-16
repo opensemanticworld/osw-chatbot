@@ -300,7 +300,13 @@ class ChatSession:
         async def create_category_instance(
             category_page: str, instance_description: Optional[str] = None
         ) -> str:
-            """Opens an editor to create an instance for the given category page. A description of the instance can be provided that supports to fill out the fields. Returns 'success' if the editor was opened, else 'failure'."""
+            """Opens the form editor for a new instance of a category, prefilled from the given description, for the user to review and save.
+
+            Prefer 'edit_page' instead whenever you can fill the data yourself - for an entity whose only meaningful field is a label, such as a keyword, the editor is needless work for the user. Use this tool only when the category has required fields you cannot infer and the user should fill them in.
+
+            It returns as soon as the editor is open - the user then has as long as they like to check the fields, and the page only exists once they save it. Never report it as created.
+
+            Only one editor can be open at a time, so open a single one and tell the user what to do with it. If several instances are needed, write them with 'edit_page' instead, or do them one after another as the user saves each."""
 
             default_data = None
             if instance_description is not None:

@@ -32,7 +32,7 @@ def _origins(name, default="*"):
 PARENT_ORIGINS = _origins("PARENT_ORIGIN")
 
 # Seconds to wait for the users browser to answer a client-side tool call.
-CLIENT_TOOL_TIMEOUT = float(os.getenv("CLIENT_TOOL_TIMEOUT", "30"))
+CLIENT_TOOL_TIMEOUT = float(os.getenv("CLIENT_TOOL_TIMEOUT", "60"))
 
 ## Chat UI
 
