@@ -63,16 +63,49 @@ STEP_CSS = """
   background: transparent !important; box-shadow: none !important;
   padding: 0 !important;
 }
-.step-avatar-container { display: none !important; }
+/* .step-avatar-container holds the pending/running/success/failed badge -
+   hiding it also hides whether the call worked. Keep it, just small. */
+.step-avatar-container {
+  min-width: 0 !important; width: auto !important; margin: 0 4px 0 0 !important;
+}
+.step-avatar-container img, .step-avatar-container svg { width: 13px; height: 13px; }
 .step-header {
-  padding: 1px 0 !important; min-height: 0 !important; gap: 5px !important;
+  padding: 1px 0 !important; min-height: 0 !important; gap: 4px !important;
   align-items: center !important;
+}
+/* bokeh sizes the title in fixed pixels, so once the badge column takes its
+   width back the title collapses to nothing - let it fill the row instead */
+.step-title {
+  flex: 1 1 auto !important; width: auto !important; min-width: 0 !important;
 }
 .step-title, .step-title p {
   color: #9aa0a6 !important; font-size: 12px !important;
   margin: 0 !important; line-height: 1.5 !important;
 }
 """
+
+
+def describe(output) -> str:
+    """What a tool returned, in one line.
+
+    Shape over content: `get_page_content` and `where_am_i` return kilobytes of
+    page markup, and the step is a status line, not a transcript of the wiki.
+    """
+    if isinstance(output, dict):
+        if output.get("ok") is False:
+            return str(output.get("message") or output.get("code") or "failed")
+        return "returned " + ", ".join(list(output)[:6])
+    if isinstance(output, (list, tuple)):
+        return f"returned {len(output)} item{'s' if len(output) != 1 else ''}"
+    fields = getattr(type(output), "model_fields", None)   # pydantic result
+    if fields:
+        return "returned " + ", ".join(list(fields)[:6])
+
+    text = str(output)
+    if len(text) > 200:
+        return f"returned {len(text)} characters"
+    # short results are worth showing, with markup defanged
+    return " ".join(text.replace("<", "‹").split()) or "done"
 
 
 class ToolProgressHandler(AsyncCallbackHandler):
@@ -96,8 +129,14 @@ class ToolProgressHandler(AsyncCallbackHandler):
         pending, done = self._titles(name, kwargs.get("inputs") or input_str)
         try:
             step = self.instance.add_step(
-                pending_title=pending, success_title=done,
-                title=pending, collapsed=True,
+                # One per status: the title switches with `status`, and a
+                # status whose title is unset renders an empty header.
+                default_title=pending, pending_title=pending,
+                running_title=pending, success_title=done,
+                failed_title=done + " - failed",
+                # Collapsed by default so the answer stays the thing you read,
+                # but expandable - the body carries what the call returned.
+                collapsed=True, collapsible=True,
                 # default_layout="card" wraps the steps in a Card titled
                 # "Steps", a full-width header that dwarfs the lines inside it;
                 # an empty user drops the duplicate "Assistant" label, since
@@ -106,6 +145,7 @@ class ToolProgressHandler(AsyncCallbackHandler):
                 stylesheets=[STEP_CSS],
                 margin=0,
             )
+            step.status = "running"
         except Exception as e:  # noqa: BLE001 - progress must never break a turn
             print(f"osw-chatbot: could not add a progress step ({e})")
             return
@@ -119,16 +159,18 @@ class ToolProgressHandler(AsyncCallbackHandler):
         # so look for it here too - otherwise a failure renders as success.
         text = str(output)
         failed = text.startswith("Error:") or "do not have permission" in text
-        self._fin(step, "failed" if failed else "success")
+        self._fin(step, "failed" if failed else "success", describe(output))
 
     async def on_tool_error(self, error, *, run_id=None, **kwargs):
         step = self._steps.pop(run_id, None)
         if step is not None:
-            self._fin(step, "failed")
+            self._fin(step, "failed", str(error)[:200])
 
     @staticmethod
-    def _fin(step, status):
+    def _fin(step, status, detail=""):
         try:
+            if detail:
+                step.stream(detail)
             step.status = status
         except Exception:  # noqa: BLE001
             pass

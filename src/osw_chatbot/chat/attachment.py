@@ -37,10 +37,12 @@ class AttachmentWidget(AnyWidgetComponent):
       padding: 2px 0 4px 0; font-size: 12px; line-height: 1.4;
     }
     .osw-attach-button {
+      display: inline-flex; align-items: center; gap: 5px;
       background: #2a2a2a; color: #ddd; border: 1px solid #444;
       border-radius: 4px; padding: 3px 9px; cursor: pointer;
-      font-size: 13px; line-height: 1.2;
+      font: inherit; font-size: 12px; line-height: 1.4;
     }
+    .osw-attach-icon { font-size: 13px; line-height: 1; }
     .osw-attach-button:hover { background: #383838; }
     .osw-attachment-chips { display: flex; flex-wrap: wrap; gap: 4px; }
     .osw-chip {
@@ -93,8 +95,8 @@ class AttachmentWidget(AnyWidgetComponent):
       const button = document.createElement("button");
       button.type = "button";
       button.className = "osw-attach-button";
-      button.textContent = "📎";
-      button.title = "Attach a file";
+      button.innerHTML = '<span class="osw-attach-icon">\\u{1F4CE}</span><span>Attach</span>';
+      button.title = "Attach a file for the assistant to look at or upload";
       const input = document.createElement("input");
       input.type = "file";
       input.multiple = true;

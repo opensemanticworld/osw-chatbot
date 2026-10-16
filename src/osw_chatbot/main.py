@@ -53,6 +53,12 @@ COMPACT_MESSAGE_CSS = """
    the whole shortfall shows up on the right. Let each level fill its parent
    so the gaps stay equal and the text follows when the popup is maximized. */
 :host { width: 100% !important; }
+/* ...except inside a tool step: its header is a flex row, and a badge or
+   title claiming the full width pushes the title out of sight. */
+:host(.chat-steps), :host(.step-avatar-container), :host(.step-title),
+:host(.step-message) {
+  width: auto !important;
+}
 .right, .center { width: 100% !important; max-width: 100% !important; }
 .message { width: 100% !important; max-width: 100% !important; }
 """
