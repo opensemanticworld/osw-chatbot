@@ -818,3 +818,30 @@ def test_the_opening_messages_are_configurable():
 
     assert config.CHATBOT_GREETING == "what's on your mind?"
     assert "can be wrong" in config.CHATBOT_INTRO
+
+
+def test_handled_replies_are_acknowledged_so_the_browser_can_forget_them(session):
+    """The cumulative list must not keep carrying old results.
+
+    A get_page_content result is a whole page and a file result is a data url.
+    Re-serialising those on every later event froze the chat UI.
+    """
+    async def scenario():
+        pending = asyncio.ensure_future(
+            session.call_client_side_tool("get_page_content", [["A"]], timeout=5))
+        await asyncio.sleep(0.05)
+        call = browser_calls(session)[0]
+        browser_replies(session, call["id"], "x" * 50000)
+        assert await pending == "x" * 50000
+
+        # the backend confirms exactly what it consumed
+        assert session.frontend.processed_events, "nothing acknowledged"
+        assert all(s in session._seen_events for s in session.frontend.processed_events)
+
+        # replaying an acknowledged event is a no-op, not a second resolve
+        before = len(session._seen_events)
+        session.frontend.function_events = list(session.frontend.function_events)
+        await asyncio.sleep(0.05)
+        assert len(session._seen_events) == before
+
+    asyncio.run(scenario())

@@ -72,6 +72,8 @@ class ChatFrontendWidget(AnyWidgetComponent):
     # what makes concurrent tool calls safe.
     function_calls = param.List(default=[])
     function_events = param.List(default=[])
+    # Sequence ids the backend has handled, so the browser can forget them.
+    processed_events = param.List(default=[])
     allowed_origins = param.List(default=["*"])
 
     _esm = ORIGIN_JS + """
@@ -108,6 +110,18 @@ class ChatFrontendWidget(AnyWidgetComponent):
         model.set("function_events", [...events]);
         model.save_changes();
       }
+
+      // The list is only cumulative so that a coalesced update cannot hide a
+      // reply python has not seen yet. Once it confirms a reply, drop it:
+      // results carry whole pages and data urls, and re-serialising those on
+      // every later event is what froze the chat.
+      model.on("change:processed_events", () => {
+        const done = new Set(model.get("processed_events") || []);
+        if (!done.size) return;
+        events = events.filter((e) => !done.has(e.seq));
+        // Deliberately no model.set here - python already has these, and
+        // publishing the shorter list would just bounce back again.
+      });
 
       const onMessage = (event) => {
         if (!org.accept(event)) return;

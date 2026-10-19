@@ -270,11 +270,13 @@ class ChatSession:
         still carries everything we have not processed; `_seen_events` makes
         replaying the overlap harmless.
         """
+        handled = []
         for data in event.new or []:
             seq = data.get("seq")
             if seq in self._seen_events:
                 continue
             self._seen_events.add(seq)
+            handled.append(seq)
             call_id = data.get("id")
             if data.get("type") == "function_call_progress":
                 # The browser is alive and waiting on the user. Give the call a
@@ -293,6 +295,14 @@ class ChatSession:
                 # The watcher may fire off another thread - always hop back to the
                 # loop the future was created on.
                 future.get_loop().call_soon_threadsafe(future.set_result, data.get("result"))
+        if handled:
+            # An update already in flight can still carry an acked event, so
+            # keep recognising them for a while - just not forever.
+            if len(self._seen_events) > 1000:
+                self._seen_events = set(list(self._seen_events)[-500:])
+            # Let the browser drop these. A result holds a whole page or a data
+            # url, and the list is republished on every later event.
+            self.frontend.processed_events = handled
 
     def _publish_calls(self):
         # json round trip: a fresh object so param detects the change, and it
