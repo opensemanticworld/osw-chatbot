@@ -109,13 +109,31 @@ class AttachmentWidget(AnyWidgetComponent):
       button.onclick = () => input.click();
       input.onchange = () => { addFiles(input.files); input.value = ""; };
 
-      // drag and drop anywhere in the chat
-      window.addEventListener("dragover", (e) => { e.preventDefault(); });
-      window.addEventListener("drop", (e) => {
-        if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+      // Drag and drop anywhere in the chat. Capture phase on `document`, which
+      // is what the wiki's own uploader uses - it runs before any element
+      // handler and before anything that stops propagation on the way up.
+      const onDragOver = (e) => { e.preventDefault(); };
+      const onDrop = (e) => {
+        if (!e.dataTransfer) return;
+        // Snapshot synchronously: addFiles awaits, and by then the browser has
+        // put the DataTransfer into protected mode and the list reads empty.
+        const files = [...e.dataTransfer.files];
+        if (!files.length) return;
         e.preventDefault();
-        addFiles(e.dataTransfer.files);
-      });
+        addFiles(files);
+      };
+      document.addEventListener("dragover", onDragOver, true);
+      document.addEventListener("drop", onDrop, true);
+
+      // Files dropped on the wiki page around the iframe never reach this
+      // document at all - the gadget catches those and forwards them here.
+      const onParentFiles = (event) => {
+        if (!org.accept(event)) return;
+        const data = event.data;
+        if (!data || data.type !== "chatbot_attachment_drop") return;
+        addFiles(data.files || []);
+      };
+      window.addEventListener("message", onParentFiles);
 
       function publish() {
         model.set("attachments", [...staged.values()].map(s => s.meta));
@@ -166,7 +184,7 @@ class AttachmentWidget(AnyWidgetComponent):
       }
 
       // The parent asks for the original when the assistant uploads it.
-      window.addEventListener("message", (event) => {
+      const onBlobRequest = (event) => {
         if (!org.accept(event)) return;
         const data = event.data;
         if (!data || data.type !== "chatbot_attachment_get") return;
@@ -179,7 +197,8 @@ class AttachmentWidget(AnyWidgetComponent):
           mime: entry && entry.meta.mime,
           blob: entry ? entry.file : null      // structured clone, no base64
         });
-      });
+      };
+      window.addEventListener("message", onBlobRequest);
 
       model.on("change:discard", () => {
         const id = model.get("discard");
@@ -187,6 +206,17 @@ class AttachmentWidget(AnyWidgetComponent):
         if (id === "*") staged.clear(); else staged.delete(id);
         publish();
       });
+
+      // Panel re-runs render() on a re-render. Without this the old listeners
+      // stay on `document`/`window` holding a stale `staged` map, and a stale
+      // blob handler can answer an upload request with null before the live
+      // one gets to it.
+      return () => {
+        document.removeEventListener("dragover", onDragOver, true);
+        document.removeEventListener("drop", onDrop, true);
+        window.removeEventListener("message", onParentFiles);
+        window.removeEventListener("message", onBlobRequest);
+      };
     }
     export default { render };
     """
