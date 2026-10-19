@@ -19,6 +19,7 @@ from osw_chatbot.chat.attachment import AttachmentWidget
 from osw_chatbot.chat.client_store import ClientStoreWidget
 from osw_chatbot.config import (
     ATTACHMENT_MAX_BYTES,
+    CHATBOT_GREETING,
     CHATBOT_INTRO,
     HISTORY_ENABLED,
     PARENT_ORIGINS,
@@ -30,7 +31,6 @@ pn.extension()
 
 pn.config.theme = 'dark'
 
-GREETING = "what's on your mind?"
 
 # Embedded in the wiki the chat is only ~210px wide, and the avatar column eats
 # 60px of that - enough to wrap the text to one character per line. Panel 1.7.4
@@ -190,7 +190,8 @@ def build_app():
             # repeating it on every reload would be noise.
             if CHATBOT_INTRO:
                 chat_bot.send(CHATBOT_INTRO, user=ASSISTANT_NAME, respond=False)
-            chat_bot.send(GREETING, user=ASSISTANT_NAME, respond=False)
+            if CHATBOT_GREETING:
+                chat_bot.send(CHATBOT_GREETING, user=ASSISTANT_NAME, respond=False)
         # Attach after the replay so it is not mistaken for a user edit.
         chat_bot.param.watch(on_messages_changed, "objects")
 

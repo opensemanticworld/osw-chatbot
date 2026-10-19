@@ -798,3 +798,23 @@ def test_an_existing_page_can_still_be_edited(session):
             slots={"main": ""}) == {"ok": True}
 
     asyncio.run(scenario())
+
+
+def test_the_opening_messages_are_configurable():
+    """A deployment may reword, translate or drop either opener."""
+    import importlib, os
+    import osw_chatbot.config as config
+
+    try:
+        os.environ["CHATBOT_GREETING"] = "Wie kann ich helfen?"
+        os.environ["CHATBOT_INTRO"] = ""
+        importlib.reload(config)
+        assert config.CHATBOT_GREETING == "Wie kann ich helfen?"
+        assert config.CHATBOT_INTRO == ""      # empty hides it
+    finally:
+        del os.environ["CHATBOT_GREETING"]
+        del os.environ["CHATBOT_INTRO"]
+        importlib.reload(config)
+
+    assert config.CHATBOT_GREETING == "what's on your mind?"
+    assert "can be wrong" in config.CHATBOT_INTRO

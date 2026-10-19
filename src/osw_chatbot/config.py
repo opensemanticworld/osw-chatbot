@@ -51,6 +51,10 @@ CHATBOT_INTRO = os.getenv(
     "create or change pages when you ask me to.",
 ).strip()
 
+# The conversational opener, shown under the intro on a new chat. Empty
+# hides it, leaving the intro alone.
+CHATBOT_GREETING = os.getenv("CHATBOT_GREETING", "what's on your mind?").strip()
+
 # Largest attachment the browser will stage, in bytes.
 ATTACHMENT_MAX_BYTES = int(os.getenv("ATTACHMENT_MAX_BYTES", str(20 * 1024 * 1024)))
 
