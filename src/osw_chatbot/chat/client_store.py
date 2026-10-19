@@ -67,13 +67,14 @@ class ClientStoreWidget(AnyWidgetComponent):
         model.save_changes();
       }
 
-      window.addEventListener("message", (event) => {
+      const onMessage = (event) => {
         if (!org.accept(event)) return;
         const data = event.data;
         if (!data || data["type"] !== "chatbot_storage_result") return;
         if (data["id"] !== reqId) return;
         settle("parent", data["value"]);
-      });
+      };
+      window.addEventListener("message", onMessage);
 
       // Ask the wiki page first; fall back to our own (partitioned) storage.
       org.send({ type: "chatbot_storage_get", id: reqId, key: key });
@@ -100,6 +101,10 @@ class ClientStoreWidget(AnyWidgetComponent):
           }
         }
       });
+
+      // Panel awaits whatever render() returns and calls it on teardown, so
+      // every component here returns a cleanup rather than undefined.
+      return () => { window.removeEventListener("message", onMessage); };
     }
     export default { render };
     """

@@ -147,20 +147,46 @@ def test_two_sessions_share_nothing(session):
         other.close()
 
 
+## the browser bridge
+#
+# Both directions carry the whole current set, so these helpers mimic what the
+# widget's JS does: read the outstanding calls, append to the cumulative event
+# list.
+
+
+def browser_calls(session):
+    """The calls the browser can currently see, in the order they were made."""
+    return list(session.frontend.function_calls)
+
+
+def browser_replies(session, call_id, result=None, progress=False, token="t"):
+    # The widget numbers monotonically per render and prefixes a per-render
+    # token, so two renders cannot produce colliding sequence ids.
+    seq = f"{token}:{len(session.frontend.function_events) + 1}"
+    event = {
+        "type": "function_call_progress" if progress else "function_call_result",
+        "id": call_id,
+        "seq": seq,
+    }
+    if not progress:
+        event["result"] = result
+    session.frontend.function_events = list(session.frontend.function_events) + [event]
+
+
 def test_a_tool_call_resolves_only_on_its_own_id(session):
     async def scenario():
         pending = asyncio.ensure_future(
             session.call_client_side_tool("where_am_i", [], timeout=5)
         )
-        await asyncio.sleep(0)
-        call_id = session.frontend.function_call["id"]
+        await asyncio.sleep(0.05)
+        call_id = browser_calls(session)[0]["id"]
 
         # a reply for a different call must not resolve this one
-        session.frontend.function_called = {"id": "someone-else", "result": {"url": "b"}}
+        browser_replies(session, "someone-else", {"url": "b"})
         await asyncio.sleep(0.05)
         assert not pending.done()
 
-        session.frontend.function_called = {"id": call_id, "result": {"url": "a"}}
+        browser_replies(session, call_id, {"url": "a"})
         return await pending
 
     assert asyncio.run(scenario()) == {"url": "a"}
@@ -213,12 +239,12 @@ def test_a_refusal_from_the_browser_is_raised(session):
         pending = asyncio.ensure_future(
             session.call_client_side_tool("edit_page", ["Item:X", {}], timeout=5)
         )
-        await asyncio.sleep(0)
-        call_id = session.frontend.function_call["id"]
-        session.frontend.function_called = {
-            "id": call_id,
-            "result": {"ok": False, "code": "permissiondenied", "message": "nope"},
-        }
+        await asyncio.sleep(0.05)
+        call_id = browser_calls(session)[0]["id"]
+        browser_replies(
+            session, call_id,
+            {"ok": False, "code": "permissiondenied", "message": "nope"},
+        )
         with pytest.raises(ClientToolError, match="nope"):
             await pending
 
@@ -409,33 +435,95 @@ def test_progress_labels_stay_short_and_leak_nothing(session):
             assert name in LABELS, f"no progress label for {name}"
 
 
-def test_concurrent_tool_calls_do_not_overwrite_each_other(session):
-    """The model can return several tool calls in one turn.
+def test_concurrent_reads_are_delivered_together(session):
+    """The model routinely returns several reads in one turn.
 
-    `function_call` is a single param slot, so without serialisation the second
-    assignment replaces the first before bokeh syncs it and that call is never
-    delivered - which looks like a browser timeout.
+    They must all reach the browser - the single param slot used to drop every
+    call but the last - and none of them should wait on another.
     """
     async def scenario():
-        seen = []
-        session.frontend.param.watch(
-            lambda e: seen.append((e.new or {}).get("id")), "function_call")
-
         first = asyncio.ensure_future(
             session.call_client_side_tool("get_page_content", [["A"]], timeout=5))
         second = asyncio.ensure_future(
             session.call_client_side_tool("get_page_content", [["B"]], timeout=5))
         await asyncio.sleep(0.05)
 
-        # only the first one has been handed to the browser
-        assert len(seen) == 1, seen
-        session.frontend.function_called = {"id": seen[0], "result": "first"}
-        await asyncio.sleep(0.05)
-        # ...and the second follows once the first is answered
-        assert len(seen) == 2, seen
-        session.frontend.function_called = {"id": seen[1], "result": "second"}
+        calls = browser_calls(session)
+        assert len(calls) == 2, calls
+        assert [c["args"] for c in calls] == [[["A"]], [["B"]]]
+
+        # answered out of order, because a browser may well do that
+        browser_replies(session, calls[1]["id"], "second")
+        browser_replies(session, calls[0]["id"], "first")
         assert await first == "first"
         assert await second == "second"
+        # and the outstanding set empties again
+        assert browser_calls(session) == []
+
+    asyncio.run(scenario())
+
+
+def test_a_dialog_tool_blocks_other_dialogs_but_not_reads(session):
+    """One OOUI window manager, one editor - but any number of reads."""
+    async def scenario():
+        write = asyncio.ensure_future(
+            session.call_client_side_tool("edit_page", ["Item:X", {}], timeout=5))
+        await asyncio.sleep(0.05)
+        other_write = asyncio.ensure_future(
+            session.call_client_side_tool("delete_page", ["Item:Y"], timeout=5))
+        read = asyncio.ensure_future(
+            session.call_client_side_tool("get_page_content", [["A"]], timeout=5))
+        await asyncio.sleep(0.05)
+
+        names = [c["name"] for c in browser_calls(session)]
+        assert "edit_page" in names
+        assert "get_page_content" in names, "a read must not wait for a dialog"
+        assert "delete_page" not in names, "a second dialog must wait"
+
+        for call in browser_calls(session):
+            browser_replies(session, call["id"], "ok")
+        assert await write == "ok"
+        assert await read == "ok"
+        await asyncio.sleep(0.05)
+        browser_replies(session, browser_calls(session)[0]["id"], "ok")
+        assert await other_write == "ok"
+
+    asyncio.run(scenario())
+
+
+def test_a_confirmation_dialog_stops_the_clock(session):
+    """The timeout measures the browser, not how long the user reads a dialog.
+
+    Without this the backend gave up mid-dialog, told the model the write had
+    failed, and the model wrote the page a second time.
+    """
+    async def scenario():
+        pending = asyncio.ensure_future(
+            session.call_client_side_tool("edit_page", ["Item:X", {}], timeout=0.2))
+        await asyncio.sleep(0.05)
+        call_id = browser_calls(session)[0]["id"]
+        browser_replies(session, call_id, progress=True)
+
+        # well past the original budget, still waiting
+        await asyncio.sleep(0.5)
+        assert not pending.done()
+
+        browser_replies(session, call_id, "saved")
+        assert await pending == "saved"
+
+    asyncio.run(scenario())
+
+
+def test_a_timeout_does_not_let_the_model_claim_success(session):
+    """A timed-out write has an unknown outcome, not a failed one."""
+    from osw_chatbot.toolcalling.agent import ClientToolError
+
+    async def scenario():
+        with pytest.raises(ClientToolError) as excinfo:
+            await session.call_client_side_tool("edit_page", ["Item:X", {}], timeout=0.1)
+        message = str(excinfo.value)
+        assert "may still have completed" in message
+        assert "do not report success" in message
 
     asyncio.run(scenario())
 
@@ -446,5 +534,91 @@ def test_a_silent_browser_raises_instead_of_returning_none(session):
     async def scenario():
         with pytest.raises(ClientToolError):
             await session.call_client_side_tool("where_am_i", [], timeout=0.1)
+
+    asyncio.run(scenario())
+
+
+def test_writing_a_page_requires_reading_the_skill_first(session):
+    """Guidance that is merely available keeps getting skipped.
+
+    Generated components hand-rolled `action=editslots` and invented property
+    names while the skill saying not to sat one tool call away.
+    """
+    from osw_chatbot.toolcalling.agent import ClientToolError, required_skill
+
+    assert required_skill("User:Alice/Widget.js") == "mediawiki-component"
+    assert required_skill("Category:OSW123") == "osl-page-editing"
+    assert required_skill("Item:OSW123") == "osl-page-editing"
+    assert required_skill("Main Page") is None
+
+    tool = {t.name: t for t in session.tools}["edit_page"]
+
+    async def scenario():
+        with pytest.raises(ClientToolError, match="mediawiki-component"):
+            await tool.coroutine(title="User:Alice/Widget.js", slots={"main": "x"})
+
+        # ...and reading it lifts the gate
+        load = {t.name: t for t in session.tools}["load_skill"]
+        await load.coroutine(name="mediawiki-component")
+        pending = asyncio.ensure_future(
+            tool.coroutine(title="User:Alice/Widget.js", slots={"main": "x"}))
+        await asyncio.sleep(0.05)
+        calls = browser_calls(session)
+        assert [c["name"] for c in calls] == ["edit_page"]
+        browser_replies(session, calls[0]["id"], {"ok": True})
+        assert await pending == {"ok": True}
+
+    asyncio.run(scenario())
+
+
+def test_the_component_skill_covers_uploads_and_schema_first(session):
+    """The two failures seen in review: bare File: pages and blank entities."""
+    body = session.skills["mediawiki-component"].body
+    assert "getFilePage" in body
+    assert "OSW11a53cdfbdc24524bf8ac435cbf65d9d" in body    # Wiki File category
+    assert "crypto.randomUUID()" in body
+    assert "jsonschema" in body
+    assert "osl-page-editing" in body                       # cross reference
+
+
+def test_a_rerendered_widget_does_not_strand_every_call(session):
+    """A fresh render restarts its counter; the backend remembers the old ones.
+
+    Without a per-render token every reply after a re-render looks like a
+    duplicate and the browser's answers are discarded in silence.
+    """
+    async def scenario():
+        first = asyncio.ensure_future(
+            session.call_client_side_tool("get_page_content", [["A"]], timeout=5))
+        await asyncio.sleep(0.05)
+        browser_replies(session, browser_calls(session)[0]["id"], "a", token="old")
+        assert await first == "a"
+
+        # the widget re-renders: numbering starts over under a new token
+        session.frontend.function_events = []
+        second = asyncio.ensure_future(
+            session.call_client_side_tool("get_page_content", [["B"]], timeout=5))
+        await asyncio.sleep(0.05)
+        browser_replies(session, browser_calls(session)[0]["id"], "b", token="new")
+        assert await second == "b"
+
+    asyncio.run(scenario())
+
+
+def test_keepalives_cannot_extend_a_call_forever(session):
+    """The browser knows the call id, so the ceiling must not be negotiable."""
+    async def scenario():
+        pending = asyncio.ensure_future(
+            session.call_client_side_tool("edit_page", ["Item:X", {}], timeout=1))
+        await asyncio.sleep(0.05)
+        call_id = browser_calls(session)[0]["id"]
+        ceiling = session._ceilings[call_id]
+
+        for _ in range(5):
+            browser_replies(session, call_id, progress=True)
+            assert session._deadlines[call_id] <= ceiling
+
+        browser_replies(session, call_id, "done")
+        assert await pending == "done"
 
     asyncio.run(scenario())

@@ -64,23 +64,67 @@ class ChatFrontendWidget(AnyWidgetComponent):
     a shared instance broadcasts every tool call to every connected browser.
     """
 
-    function_call = param.Dict()
-    function_called = param.Dict()
+    # Both directions carry the *whole* current set rather than one message, so
+    # that a param update which coalesces with the next one cannot drop a call
+    # or a reply. Outbound: every call still waiting for an answer. Inbound: the
+    # recent replies, each tagged with a sequence number. A later value is
+    # always a superset of what the other side has not processed yet, which is
+    # what makes concurrent tool calls safe.
+    function_calls = param.List(default=[])
+    function_events = param.List(default=[])
     allowed_origins = param.List(default=["*"])
 
     _esm = ORIGIN_JS + """
+    const EVENT_HISTORY = 50;   // far above any plausible number in flight
+
     function render({ model, el }) {
       const org = makeOrigin(model);
-      model.on("change:function_call", () => {
-        org.send(model.get("function_call"));
-      });
-      window.addEventListener("message", (event) => {
-        if (!org.accept(event)) return;
-        if (event.data && event.data["type"] === "function_call_result") {
-          model.set("function_called", event.data);
-          model.save_changes();
+      const dispatched = new Set();
+      let events = [];
+      let seq = 0;
+      // Panel can re-run render() without tearing the old one down, and the
+      // backend remembers which events it has already handled for the life of
+      // the session. A per-render token keeps a fresh closure's numbering from
+      // colliding with the previous one's, which would make every reply look
+      // like a duplicate and silently strand every tool call.
+      const token = Math.random().toString(36).slice(2);
+
+      model.on("change:function_calls", () => {
+        const calls = model.get("function_calls") || [];
+        const live = new Set(calls.map((c) => c.id));
+        // Python drops a call once it is answered or gives up on it; forgetting
+        // it here too keeps the set from growing for the life of the session.
+        for (const id of [...dispatched]) if (!live.has(id)) dispatched.delete(id);
+        for (const call of calls) {
+          if (dispatched.has(call.id)) continue;   // already running
+          dispatched.add(call.id);
+          org.send(call);
         }
       });
+
+      function emit(data) {
+        events.push({ ...data, seq: token + ":" + (++seq) });
+        if (events.length > EVENT_HISTORY) events = events.slice(-EVENT_HISTORY);
+        model.set("function_events", [...events]);
+        model.save_changes();
+      }
+
+      const onMessage = (event) => {
+        if (!org.accept(event)) return;
+        const data = event.data;
+        if (!data) return;
+        // A progress message buys the call more time - the browser is alive,
+        // it is just waiting for the user to answer a confirmation dialog.
+        if (data["type"] === "function_call_result" ||
+            data["type"] === "function_call_progress") {
+          emit(data);
+        }
+      };
+      window.addEventListener("message", onMessage);
+
+      // Without this a re-render leaves the old listener attached: two
+      // listeners then publish rival cumulative lists and replies get lost.
+      return () => { window.removeEventListener("message", onMessage); };
     }
     export default { render };
     """

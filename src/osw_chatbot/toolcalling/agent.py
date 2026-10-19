@@ -2,7 +2,7 @@ import asyncio
 import copy
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import langchain_core.tools
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -12,7 +12,11 @@ from langchain_core.tools import ToolException
 from pydantic import BaseModel, ValidationError
 
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
-from osw_chatbot.config import CLIENT_TOOL_TIMEOUT, PARENT_ORIGINS
+from osw_chatbot.config import (
+    CLIENT_TOOL_TIMEOUT,
+    CONFIRM_TIMEOUT,
+    PARENT_ORIGINS,
+)
 from osw_chatbot.chat.history import trim_history
 from osw_chatbot.llm import llm
 from osw_chatbot.skills import load_skills, skill_index
@@ -20,6 +24,38 @@ from osw_chatbot.structured_output.llm import get_llm_response
 from osw_chatbot.structured_output.util import multimedia_data_url_to_text
 from osw_chatbot.websearch.interative_websearch import invoke as websearch_invoke
 from osw_chatbot.websearch.interative_websearch import tools as websearch_tools
+
+
+# Client tools that drive the singleton OOUI window manager behind every
+# confirmation dialog. Two dialogs at once queue invisibly, so these take the
+# browser lock; everything else - the reads - runs concurrently.
+# `create_category_instance` is here for the same reason, though note the
+# browser returns as soon as the editor is open rather than awaiting it, so
+# the lock does not actually keep two editors apart.
+EXCLUSIVE_CLIENT_TOOLS = {
+    "edit_page",
+    "delete_page",
+    "upload_file",
+    "redirect",
+    "create_category_instance",
+    "confirm_action",
+}
+
+
+# Which skill has to be read before writing a given page. The guidance has
+# existed for a while and was still ignored - generated components kept
+# hand-rolling `action=editslots` and inventing property names - so the write
+# tool asks for it rather than trusting the system prompt.
+def required_skill(title: str) -> Optional[str]:
+    # MediaWiki normalises ":category:foo" and "Category:Foo" to one page, so
+    # match the way it does rather than on the exact string the model sent.
+    title = (title or "").strip().lstrip(":")
+    if title.lower().endswith((".js", ".css")):
+        return "mediawiki-component"
+    namespace = title.split(":", 1)[0].strip().lower()
+    if namespace in ("category", "item", "property", "jsonschema"):
+        return "osl-page-editing"
+    return None
 
 
 class ClientToolError(ToolException):
@@ -89,6 +125,7 @@ SYSTEM_TEXT = (
     "You also have web search tools. Use them whenever external or up to date information would help to answer, and do so directly instead of asking the user for permission first. The topic does not have to be related to this wiki - answer general questions too, guiding the user on the wiki is your main job, not your only one."
     "Edit pages only when the user requests it. Otherwise ask for confirmation first."
     "This wiki stores things as structured entities, so create a device, event, person, project or sample as an instance of its category (find it with 'find_page_from_topic', read it with 'get_category_schema'), never as a plain wikitext page. The exceptions are the user's own 'User:<name>/...' subpages, '.js' and '.css' pages, and the main page."
+    "Report what actually happened: only call a page created, saved or deleted when the tool returned success. If a tool reported an error or a timeout, say exactly that - a timed out write may or may not have gone through, so re-read the page and tell the user what you found instead of retrying blindly or claiming it worked."
 )
 
 
@@ -139,16 +176,25 @@ class ChatSession:
         )
         self._timeout = tool_timeout or CLIENT_TOOL_TIMEOUT
         self._pending: Dict[str, asyncio.Future] = {}
-        # `function_call` is a single param slot. When the model returns
-        # several tool calls in one turn the executor runs them concurrently,
-        # and a second assignment replaces the first before bokeh has synced
-        # it - the browser never sees that call and it times out. One at a
-        # time; the browser is a single user interface anyway.
+        # The calls the browser has not answered yet. Published as a whole (see
+        # ChatFrontendWidget) so that two tool calls started in the same tick
+        # cannot overwrite each other the way a single param slot did.
+        self._outstanding: Dict[str, dict] = {}
+        # call_id -> loop time at which we give up. A progress message from the
+        # browser pushes it out; see _on_function_events.
+        self._deadlines: Dict[str, float] = {}
+        # Hard upper bound per call, so keep-alives cannot extend forever.
+        self._ceilings: Dict[str, float] = {}
+        self._seen_events: Set[str] = set()
+        # Only the tools that open a dialog or an editor are serialised - the
+        # browser can run any number of reads at once, and a confirmation the
+        # user leaves sitting must not block them.
         self._browser = asyncio.Lock()
         self._closed = False
-        self.frontend.param.watch(self._on_function_called, "function_called")
+        self.frontend.param.watch(self._on_function_events, "function_events")
 
         self.skills = load_skills()
+        self.loaded_skills: Set[str] = set()
         self.chat_history: List[BaseMessage] = []
         self.tools = self._build_tools()
         if "websearch" in self.actions:
@@ -192,45 +238,123 @@ class ChatSession:
 
     ## client-side tool call bridge
 
-    def _on_function_called(self, event):
-        data = event.new or {}
-        future = self._pending.pop(data.get("id"), None)
-        if future is not None and not future.done():
-            # The watcher may fire off another thread - always hop back to the
-            # loop the future was created on.
-            future.get_loop().call_soon_threadsafe(future.set_result, data.get("result"))
+    def _on_function_events(self, event):
+        """Handle the browser's replies: results, and keep-alives for dialogs.
+
+        The list is cumulative, so an update that coalesces with the next one
+        still carries everything we have not processed; `_seen_events` makes
+        replaying the overlap harmless.
+        """
+        for data in event.new or []:
+            seq = data.get("seq")
+            if seq in self._seen_events:
+                continue
+            self._seen_events.add(seq)
+            call_id = data.get("id")
+            if data.get("type") == "function_call_progress":
+                # The browser is alive and waiting on the user. Give the call a
+                # fresh, generous budget rather than timing out mid-dialog.
+                waiting = self._pending.get(call_id)
+                if waiting is not None and call_id in self._deadlines:
+                    # The loop's clock is monotonic and safe to read from the
+                    # watcher's thread; only the waiter acts on the new value.
+                    self._deadlines[call_id] = min(
+                        waiting.get_loop().time() + CONFIRM_TIMEOUT,
+                        self._ceilings.get(call_id, float("inf")),
+                    )
+                continue
+            future = self._pending.pop(call_id, None)
+            if future is not None and not future.done():
+                # The watcher may fire off another thread - always hop back to the
+                # loop the future was created on.
+                future.get_loop().call_soon_threadsafe(future.set_result, data.get("result"))
+
+    def _publish_calls(self):
+        # json round trip: a fresh object so param detects the change, and it
+        # fails loudly here rather than during serialization.
+        self.frontend.function_calls = json.loads(
+            json.dumps(list(self._outstanding.values()))
+        )
 
     async def call_client_side_tool(self, name, args, timeout=None):
         """Ask this session's browser to run `name` and wait for its answer.
 
-        Correlation is by uuid instead of the previous randint(0, 1000), and by
-        an awaited Future instead of a 1 Hz poll of a single shared slot.
+        Correlation is by uuid and by an awaited Future. Calls run concurrently
+        unless the tool opens UI (`EXCLUSIVE_CLIENT_TOOLS`), because the wiki's
+        dialog and editor are singletons but its read APIs are not.
         """
         if self._closed:
             raise ClientToolError("the chat session was closed")
 
-        # One call in flight at a time - see the lock's definition.
-        async with self._browser:
-            if self._closed:
-                raise ClientToolError("the chat session was closed")
-            call_id = str(uuid.uuid4())
-            future = asyncio.get_running_loop().create_future()
-            self._pending[call_id] = future
-            # json round trip: a fresh object so param detects the change, and
-            # it fails loudly here rather than during serialization.
-            self.frontend.function_call = json.loads(
-                json.dumps({"type": "function_call", "id": call_id,
-                            "name": name, "args": args})
+        if name not in EXCLUSIVE_CLIENT_TOOLS:
+            return await self._dispatch(name, args, timeout)
+
+        # A user who walks away from a confirmation dialog holds this lock for
+        # the whole confirmation budget, so queueing behind it is bounded too -
+        # otherwise the turn just hangs with nothing to tell the model.
+        try:
+            await asyncio.wait_for(
+                self._browser.acquire(), CONFIRM_TIMEOUT + (timeout or self._timeout)
             )
-            try:
-                result = await asyncio.wait_for(future, timeout or self._timeout)
-            except asyncio.TimeoutError:
-                raise ClientToolError(
-                    f"the browser did not answer '{name}' within "
-                    f"{timeout or self._timeout}s"
-                ) from None
-            finally:
-                self._pending.pop(call_id, None)
+        except asyncio.TimeoutError:
+            raise ClientToolError(
+                f"'{name}' was not started: another action is still waiting for "
+                "the user to answer a confirmation dialog. Tell the user that, "
+                "and do not report this as done."
+            ) from None
+        try:
+            return await self._dispatch(name, args, timeout)
+        finally:
+            self._browser.release()
+
+    async def _dispatch(self, name, args, timeout):
+        if self._closed:
+            raise ClientToolError("the chat session was closed")
+
+        loop = asyncio.get_running_loop()
+        call_id = str(uuid.uuid4())
+        future = loop.create_future()
+        self._pending[call_id] = future
+        self._outstanding[call_id] = {
+            "type": "function_call", "id": call_id, "name": name, "args": args
+        }
+        budget = timeout or self._timeout
+        started = loop.time()
+        self._deadlines[call_id] = started + budget
+        # However many keep-alives arrive, the call cannot outlive this. The
+        # browser is told the id, so without a ceiling a looping or hostile
+        # parent page could pin the call - and the lock - for the whole session.
+        self._ceilings[call_id] = started + budget + CONFIRM_TIMEOUT
+        try:
+            self._publish_calls()
+            while True:
+                # .get: close() may have cleared the deadlines between the wait
+                # expiring and this read; a KeyError here would bypass
+                # handle_tool_error and surface as a raw traceback.
+                remaining = self._deadlines.get(call_id, 0.0) - loop.time()
+                if remaining <= 0:
+                    waited = round(loop.time() - started)
+                    raise ClientToolError(
+                        f"the browser did not answer '{name}' within {waited}s. "
+                        "The action may still have completed - do not retry it "
+                        "blindly and do not report success. Re-read the page "
+                        "and tell the user what you actually found."
+                    ) from None
+                try:
+                    # shield: the wait expiring must not cancel the call itself,
+                    # since a progress message may have extended its deadline.
+                    result = await asyncio.wait_for(
+                        asyncio.shield(future), remaining
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    continue   # re-read the deadline, which may have moved
+        finally:
+            self._pending.pop(call_id, None)
+            self._deadlines.pop(call_id, None)
+            self._ceilings.pop(call_id, None)
+            if self._outstanding.pop(call_id, None) is not None and not self._closed:
+                self._publish_calls()
 
         if result is None:
             raise ClientToolError(f"'{name}' returned no result")
@@ -416,6 +540,12 @@ class ChatSession:
             Scripts (.js/.css) may only be written inside the current user's own space, i.e. 'User:<name>/...'.
             Returns {'ok': true, 'title', 'created'} or raises with the reason the wiki refused.
             """
+            needed = required_skill(title)
+            if needed in session.skills and needed not in session.loaded_skills:
+                raise ClientToolError(
+                    f"read the '{needed}' skill before writing this page: call "
+                    f"load_skill('{needed}'), follow it, then make this edit again"
+                )
             return await session.call_client_side_tool("edit_page", [title, slots, summary])
 
         @langchain_core.tools.tool
@@ -426,12 +556,13 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def load_skill(name: str) -> str:
-            """Returns detailed instructions for a task. Call this before starting any task that matches one of the skills listed in your instructions, and follow what it returns."""
+            """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not."""
 
             skill = session.skills.get(name)
             if skill is None:
                 available = ", ".join(session.skills) or "none"
                 raise ClientToolError(f"no skill named {name!r}. Available: {available}")
+            session.loaded_skills.add(name)
             return skill.body
 
         tools = [
@@ -518,4 +649,8 @@ class ChatSession:
                     future.set_exception, ClientToolError("the chat session was closed")
                 )
         self._pending.clear()
+        self._outstanding.clear()
+        self._deadlines.clear()
+        self._ceilings.clear()
+        self._seen_events.clear()
         self.chat_history.clear()

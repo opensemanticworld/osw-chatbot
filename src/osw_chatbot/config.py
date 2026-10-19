@@ -34,6 +34,12 @@ PARENT_ORIGINS = _origins("PARENT_ORIGIN")
 # Seconds to wait for the users browser to answer a client-side tool call.
 CLIENT_TOOL_TIMEOUT = float(os.getenv("CLIENT_TOOL_TIMEOUT", "60"))
 
+# Once the browser reports that it is showing a confirmation dialog, the clock
+# is measuring how long the *user* takes to read it, not whether the browser is
+# still alive. Timing out there told the model a write had failed while it was
+# in fact about to succeed, so it retried and wrote twice.
+CONFIRM_TIMEOUT = float(os.getenv("CONFIRM_TIMEOUT", "600"))
+
 ## Chat UI
 
 # Shown once at the top of a new conversation. Configurable so a deployment
