@@ -2,7 +2,7 @@ import asyncio
 import copy
 import json
 import uuid
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 import langchain_core.tools
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -20,6 +20,7 @@ from osw_chatbot.config import (
 from osw_chatbot.chat.history import trim_history
 from osw_chatbot.llm import llm
 from osw_chatbot.skills import load_skills, skill_index
+from osw_chatbot.toolcalling import prefill
 from osw_chatbot.structured_output.llm import get_llm_response
 from osw_chatbot.structured_output.util import multimedia_data_url_to_text
 from osw_chatbot.websearch.interative_websearch import invoke as websearch_invoke
@@ -445,11 +446,19 @@ class ChatSession:
             Only one editor can be open at a time, so open a single one and tell the user what to do with it. If several instances are needed, write them with 'edit_page' instead, or do them one after another as the user saves each."""
 
             default_data = None
+            unresolved: List[str] = []
             if instance_description is not None:
                 try:
                     org_prompt = instance_description
                     prompt = org_prompt
                     prompt += "\nCreate only attributes that are defined in the schema. If you are not sure about an attributes, leave it empty.\n\n"
+                    prompt += (
+                        "A property with \"format\": \"autocomplete\" (usually carrying a "
+                        "\"range\", \"subclassof_range\" or an autocomplete \"query\") holds a "
+                        "page title of the form '<Namespace>:OSW<uuid without hyphens>', never "
+                        "a name, a phrase or an object. If you do not know the exact page title, "
+                        "leave the property out entirely.\n\n"
+                    )
                     force_websearch = False
                     if force_websearch:
                         try:
@@ -470,11 +479,27 @@ class ChatSession:
                     )
                     default_data = default_data_res["result"]
                     print("DESCRIPTION", instance_description, "DATA", default_data)
+                    default_data, unresolved = await session._resolve_references(
+                        default_data, jsonschema
+                    )
                 except Exception as e:
                     print(e)
-            return await session.call_client_side_tool(
+            opened = await session.call_client_side_tool(
                 "create_category_instance", [category_page, default_data]
             )
+            if unresolved:
+                # Say it here rather than leaving the user to notice the gaps:
+                # these fields reference pages, and the referenced pages do not
+                # exist yet or could not be matched.
+                return (
+                    f"{opened}\nThe editor is open, but these reference fields were "
+                    "left empty because no matching page was found: "
+                    + "; ".join(unresolved)
+                    + ". Tell the user, and offer to create the missing entities "
+                    "(with 'edit_page', as instances of the category the field "
+                    "expects) before they save. Never type a name into such a field."
+                )
+            return opened
 
         @langchain_core.tools.tool
         async def smw_ask_query(query) -> dict:
@@ -520,7 +545,9 @@ class ChatSession:
             return await session.call_client_side_tool("get_category_schema", [category_page])
 
         @langchain_core.tools.tool
-        async def edit_page(title: str, slots: Dict[str, Any], summary: str = "") -> dict:
+        async def edit_page(
+            title: str, slots: Union[Dict[str, Any], str], summary: str = ""
+        ) -> dict:
             """Creates or edits a wiki page. Only the given slots are changed, everything else on the page stays as it is. A page title must contain the namespace (e.g. 'Category:', 'Item:' or 'User:').
 
             Anything that is a thing - a device, an event, a person, a project, a sample, a method - is created as an *instance of its category*, not as a plain wikitext page: find the category with 'find_page_from_topic', read it with 'get_category_schema', then write an 'Item:OSW<uuid without dashes>' page whose 'jsondata' slot is {'type': ['Category:OSW...'], 'uuid': '<uuid>', 'label': [{'text': ..., 'lang': ...}], ...}.
@@ -545,6 +572,23 @@ class ChatSession:
                 raise ClientToolError(
                     f"read the '{needed}' skill before writing this page: call "
                     f"load_skill('{needed}'), follow it, then make this edit again"
+                )
+            # Models regularly hand the whole slot map over as a JSON string.
+            # Accepting it is cheaper than a failed turn: a pydantic
+            # ValidationError is not a ToolException, so it bypasses
+            # handle_tool_error and takes the conversation down with a traceback.
+            if isinstance(slots, str):
+                try:
+                    slots = json.loads(slots)
+                except ValueError as exc:
+                    raise ClientToolError(
+                        "'slots' must be an object mapping slot name to content, "
+                        f"and the string given is not valid JSON ({exc})"
+                    ) from None
+            if not isinstance(slots, dict):
+                raise ClientToolError(
+                    "'slots' must be an object mapping slot name to content, "
+                    f"got {type(slots).__name__}"
                 )
             return await session.call_client_side_tool("edit_page", [title, slots, summary])
 
@@ -589,6 +633,65 @@ class ChatSession:
         for tool in tools:
             tool.handle_tool_error = _tool_error_observation
         return tools
+
+    async def _resolve_references(self, data, schema):
+        """Turn reference values into real page titles, or drop them.
+
+        The prefill pass writes names and label objects into fields whose range
+        says 'a page title'. Look each one up in the range it must satisfy; an
+        unresolved value is removed, because a wrong title is indistinguishable
+        from a right one once it is in the form.
+        """
+        from osw_chatbot.structured_output.util import merge_all_of
+
+        if not isinstance(data, (dict, list)):
+            return data, []
+
+        try:
+            merged = merge_all_of(schema)
+        except Exception:
+            merged = schema
+
+        unresolved: List[str] = []
+        for container, key, path, value, constraint in list(
+            prefill.find_references(data, merged)
+        ):
+            if prefill.looks_like_reference(value):
+                continue
+            text = prefill.label_text(value)
+            if not text:
+                prefill.drop(container, key)
+                continue
+            title = await self._lookup_reference(text, constraint)
+            if title:
+                container[key] = title
+            else:
+                prefill.drop(container, key)
+                unresolved.append(
+                    f"{path} = {text!r} (needs {prefill.describe_constraint(constraint)})"
+                )
+        return prefill.prune_empty(data), unresolved
+
+    async def _lookup_reference(self, text, constraint):
+        """The page in `constraint`'s range whose label is `text`, if unambiguous."""
+        category = constraint.get("range") or constraint.get("subclassof_range")
+        if not category:
+            return None
+        normalized = prefill.normalize_label(text)
+        if not normalized:
+            return None
+        query = (
+            f"[[{category}]][[HasNormalizedLabel::{normalized}]]"
+            "|?HasNormalizedLabel|limit=2"
+        )
+        try:
+            result = await self.call_client_side_tool("smw_ask_query", [query])
+        except ClientToolError:
+            return None
+        results = (result or {}).get("query", {}).get("results", {})
+        titles = [t for t in results if prefill.looks_like_reference(t)]
+        # Exactly one match or nothing: picking from several would be a guess.
+        return titles[0] if len(titles) == 1 else None
 
     ## conversation
 

@@ -622,3 +622,102 @@ def test_keepalives_cannot_extend_a_call_forever(session):
         assert await pending == "done"
 
     asyncio.run(scenario())
+
+
+def test_edit_page_accepts_slots_as_a_json_string(session):
+    """A ValidationError here is not a ToolException, so it killed the turn."""
+    from osw_chatbot.toolcalling.agent import ClientToolError
+
+    tool = {t.name: t for t in session.tools}["edit_page"]
+    session.loaded_skills.add("osl-page-editing")
+
+    async def scenario():
+        pending = asyncio.ensure_future(tool.coroutine(
+            title="Item:OSW1", slots='{"jsondata": {"label": "x"}}'))
+        await asyncio.sleep(0.05)
+        call = browser_calls(session)[0]
+        assert call["args"][1] == {"jsondata": {"label": "x"}}, "not parsed"
+        browser_replies(session, call["id"], {"ok": True})
+        assert await pending == {"ok": True}
+
+        with pytest.raises(ClientToolError, match="valid JSON"):
+            await tool.coroutine(title="Item:OSW1", slots="not json")
+
+    asyncio.run(scenario())
+
+
+## prefilling the form editor
+
+
+def test_reference_fields_are_resolved_or_emptied(session):
+    """The prefill pass writes names and label objects where a title belongs.
+
+    `keywords` is an array of autocomplete strings ranged on the Keyword
+    category, so {"text": "Materials science"} is not a value it can hold.
+    """
+    from osw_chatbot.toolcalling import prefill
+
+    schema = {
+        "properties": {
+            "label": {"type": "array", "items": {"type": "object"}},
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string", "format": "autocomplete",
+                          "range": "Category:OSW09f6cdd54bc54de786eafced5f675cbe"},
+            },
+        }
+    }
+    data = {
+        "label": [{"text": "A sample", "lang": "en"}],
+        "keywords": [
+            {"text": "Materials science", "lang": "en"},     # object, not a title
+            "Item:OSWaa8d29404288446a9f3ec7afa4e2a512",      # already valid
+            "Something nobody has defined",                  # unresolvable
+        ],
+    }
+
+    found = list(prefill.find_references(data, schema))
+    # only the keyword items are references - the label objects are not
+    assert len(found) == 3
+    assert all(path.startswith("keywords.") for _, _, path, _, _ in found)
+
+    async def scenario():
+        async def fake_ask(name, args, timeout=None):
+            assert name == "smw_ask_query"
+            if "materialsscience" in args[0]:
+                return {"query": {"results": {
+                    "Item:OSW1111111111111111111111111111aaaa": {}}}}
+            return {"query": {"results": {}}}
+
+        session.call_client_side_tool = fake_ask
+        cleaned, unresolved = await session._resolve_references(data, schema)
+
+        assert cleaned["keywords"] == [
+            "Item:OSW1111111111111111111111111111aaaa",   # looked up by label
+            "Item:OSWaa8d29404288446a9f3ec7afa4e2a512",   # left alone
+        ]
+        assert len(unresolved) == 1
+        assert "Something nobody has defined" in unresolved[0]
+        assert "Category:OSW09f6cdd54bc54de786eafced5f675cbe" in unresolved[0]
+        # the label is untouched - it is not a reference field
+        assert cleaned["label"] == [{"text": "A sample", "lang": "en"}]
+
+    asyncio.run(scenario())
+
+
+def test_an_ambiguous_reference_is_not_guessed(session):
+    async def scenario():
+        async def two_hits(name, args, timeout=None):
+            return {"query": {"results": {
+                "Item:OSW1111111111111111111111111111aaaa": {},
+                "Item:OSW2222222222222222222222222222bbbb": {}}}}
+
+        session.call_client_side_tool = two_hits
+        schema = {"properties": {"status": {
+            "format": "autocomplete", "range": "Category:OSWstatus"}}}
+        cleaned, unresolved = await session._resolve_references(
+            {"status": "in progress"}, schema)
+        assert "status" not in cleaned
+        assert len(unresolved) == 1
+
+    asyncio.run(scenario())
