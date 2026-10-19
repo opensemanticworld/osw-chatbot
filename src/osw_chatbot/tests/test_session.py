@@ -41,6 +41,7 @@ EXPECTED_TOOLS = [
     "edit_page",
     "delete_page",
     "upload_file",
+    "new_osw_id",
     "load_skill",
 ]
 
@@ -719,5 +720,81 @@ def test_an_ambiguous_reference_is_not_guessed(session):
             {"status": "in progress"}, schema)
         assert "status" not in cleaned
         assert len(unresolved) == 1
+
+    asyncio.run(scenario())
+
+
+## OSW-IDs
+
+
+def test_models_do_not_get_to_invent_osw_ids(session):
+    """Observed on the wiki: aa11bb22cc3344..., bb22cc33dd4455..., a1b2c3d4...
+
+    Those are a template being filled in, not random, so two wikis coining the
+    same keyword produce the same id. Local statistics cannot tell them apart
+    (`a1b2c3d4e5f6...` scores like a real uuid4), so the model does not choose.
+    """
+    from osw_chatbot.toolcalling.agent import (
+        ClientToolError, osw_id_of, uuid_from_osw_id)
+
+    assert osw_id_of("Item:OSWaa11bb22cc3344d5a6b7c8d9e0f1a2b3") == (
+        "aa11bb22cc3344d5a6b7c8d9e0f1a2b3")
+    assert osw_id_of("Category:OSW" + "a" * 32) == "a" * 32
+    assert osw_id_of("User:Alice/Widget.js") is None
+    assert osw_id_of("Main Page") is None
+    assert uuid_from_osw_id("aa11bb22cc3344d5a6b7c8d9e0f1a2b3") == (
+        "aa11bb22-cc33-44d5-a6b7-c8d9e0f1a2b3")
+
+    tools = {t.name: t for t in session.tools}
+    session.loaded_skills.add("osl-page-editing")
+
+    async def scenario():
+        # a made-up id for a page that does not exist is refused
+        async def missing(name, args, timeout=None):
+            assert name == "get_page_content"
+            return {"query": {"pages": {"-1": {"missing": ""}}}}
+
+        session.call_client_side_tool = missing
+        with pytest.raises(ClientToolError, match="new_osw_id"):
+            await tools["edit_page"].coroutine(
+                title="Item:OSWaa11bb22cc3344d5a6b7c8d9e0f1a2b3",
+                slots={"jsondata": {"label": [{"text": "Organigramm"}]}})
+
+        # an id this session minted goes straight through
+        minted = await tools["new_osw_id"].coroutine()
+        assert minted.startswith("OSW") and len(minted) == 35
+        assert minted[3:] in session.minted_ids
+
+        sent = {}
+
+        async def capture(name, args, timeout=None):
+            sent["args"] = args
+            return {"ok": True}
+
+        session.call_client_side_tool = capture
+        await tools["edit_page"].coroutine(
+            title=f"Item:{minted}",
+            slots={"jsondata": {"label": [{"text": "Organigramm"}]}})
+        # ...and the uuid in the data is made to agree with the title
+        assert sent["args"][1]["jsondata"]["uuid"] == uuid_from_osw_id(minted[3:])
+
+    asyncio.run(scenario())
+
+
+def test_an_existing_page_can_still_be_edited(session):
+    """The gate must not block edits to pages the model did not create."""
+    tools = {t.name: t for t in session.tools}
+    session.loaded_skills.add("osl-page-editing")
+
+    async def scenario():
+        async def exists(name, args, timeout=None):
+            if name == "get_page_content":
+                return {"query": {"pages": {"42": {"title": args[0][0]}}}}
+            return {"ok": True}
+
+        session.call_client_side_tool = exists
+        assert await tools["edit_page"].coroutine(
+            title="Item:OSW452ec0273916478099c4716395e1bc18",
+            slots={"main": ""}) == {"ok": True}
 
     asyncio.run(scenario())

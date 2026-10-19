@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import re
 import uuid
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -47,6 +48,24 @@ EXCLUSIVE_CLIENT_TOOLS = {
 # existed for a while and was still ignored - generated components kept
 # hand-rolling `action=editslots` and inventing property names - so the write
 # tool asks for it rather than trusting the system prompt.
+# Namespaces whose pages are entities identified by an OSW-ID.
+ENTITY_NAMESPACES = ("item", "category", "property")
+OSW_TITLE = re.compile(r"^([A-Za-z][A-Za-z_ ]*):OSW([0-9a-fA-F]{32})$")
+
+
+def osw_id_of(title: str) -> Optional[str]:
+    """The OSW-ID in an entity page title, lowercased, or None."""
+    match = OSW_TITLE.match((title or "").strip().lstrip(":"))
+    if not match or match.group(1).lower() not in ENTITY_NAMESPACES:
+        return None
+    return match.group(2).lower()
+
+
+def uuid_from_osw_id(osw_id: str) -> str:
+    """OSW-IDs are a uuid with the hyphens taken out; put them back."""
+    return str(uuid.UUID(osw_id))
+
+
 def required_skill(title: str) -> Optional[str]:
     # MediaWiki normalises ":category:foo" and "Category:Foo" to one page, so
     # match the way it does rather than on the exact string the model sent.
@@ -126,6 +145,7 @@ SYSTEM_TEXT = (
     "You also have web search tools. Use them whenever external or up to date information would help to answer, and do so directly instead of asking the user for permission first. The topic does not have to be related to this wiki - answer general questions too, guiding the user on the wiki is your main job, not your only one."
     "Edit pages only when the user requests it. Otherwise ask for confirmation first."
     "This wiki stores things as structured entities, so create a device, event, person, project or sample as an instance of its category (find it with 'find_page_from_topic', read it with 'get_category_schema'), never as a plain wikitext page. The exceptions are the user's own 'User:<name>/...' subpages, '.js' and '.css' pages, and the main page."
+    "Never invent an OSW-ID. Every new entity gets its title from the 'new_osw_id' tool, used exactly as returned - OSW-IDs must be random and globally unique, and a made up one collides with other wikis or points at nothing."
     "Report what actually happened: only call a page created, saved or deleted when the tool returned success. If a tool reported an error or a timeout, say exactly that - a timed out write may or may not have gone through, so re-read the page and tell the user what you found instead of retrying blindly or claiming it worked."
 )
 
@@ -196,6 +216,10 @@ class ChatSession:
 
         self.skills = load_skills()
         self.loaded_skills: Set[str] = set()
+        # OSW-IDs this session handed out. Models do not generate random
+        # uuids - they fill in a pattern (aa11bb22cc3344..., a1b2c3d4...),
+        # which collides the moment two wikis coin the same entity.
+        self.minted_ids: Set[str] = set()
         self.chat_history: List[BaseMessage] = []
         self.tools = self._build_tools()
         if "websearch" in self.actions:
@@ -590,6 +614,20 @@ class ChatSession:
                     "'slots' must be an object mapping slot name to content, "
                     f"got {type(slots).__name__}"
                 )
+            osw_id = osw_id_of(title)
+            if osw_id is not None and osw_id not in session.minted_ids:
+                # Either this is a real page being edited, or the model made the
+                # id up. Only the wiki can tell us which.
+                if not await session._page_exists(title):
+                    raise ClientToolError(
+                        f"'{title}' does not exist and its OSW-ID was not issued "
+                        "here. Do not invent OSW-IDs - call 'new_osw_id' and use "
+                        "exactly what it returns as the title of the new entity."
+                    )
+            if osw_id is not None and isinstance(slots.get("jsondata"), dict):
+                # The uuid in the data and the id in the title are the same
+                # thing; a mismatch leaves the entity unfindable.
+                slots["jsondata"]["uuid"] = uuid_from_osw_id(osw_id)
             return await session.call_client_side_tool("edit_page", [title, slots, summary])
 
         @langchain_core.tools.tool
@@ -597,6 +635,14 @@ class ChatSession:
             """Deletes a wiki page. A page title must contain the namespace (e.g. 'Item:'). Returns {'ok': true} or raises with the reason the wiki refused. Ask the user before deleting anything."""
 
             return await session.call_client_side_tool("delete_page", [title, reason])
+
+        @langchain_core.tools.tool
+        async def new_osw_id() -> str:
+            """Returns a fresh OSW-ID to use as the page title of a new entity, e.g. 'OSW1fe1a1b…'. Call this once per new entity and use exactly what it returns - 'Item:<id>', 'Category:<id>'. Never make up an OSW-ID yourself: they must be random and globally unique, and a made up one collides with other wikis or points at nothing."""
+
+            osw_id = uuid.uuid4().hex
+            session.minted_ids.add(osw_id)
+            return "OSW" + osw_id
 
         @langchain_core.tools.tool
         async def load_skill(name: str) -> str:
@@ -627,6 +673,7 @@ class ChatSession:
             edit_page,
             delete_page,
             upload_file,
+            new_osw_id,
         ]
         if session.skills:
             tools.append(load_skill)
@@ -671,6 +718,20 @@ class ChatSession:
                     f"{path} = {text!r} (needs {prefill.describe_constraint(constraint)})"
                 )
         return prefill.prune_empty(data), unresolved
+
+    async def _page_exists(self, title):
+        """Does this wiki page exist? Used before trusting a model-chosen id."""
+        try:
+            data = await self.call_client_side_tool(
+                "get_page_content", [[title], False]
+            )
+        except ClientToolError:
+            # Do not block a write because the probe failed.
+            return True
+        pages = (data or {}).get("query", {}).get("pages")
+        if not isinstance(pages, dict):
+            return True
+        return not any("missing" in page for page in pages.values())
 
     async def _lookup_reference(self, text, constraint):
         """The page in `constraint`'s range whose label is `text`, if unambiguous."""

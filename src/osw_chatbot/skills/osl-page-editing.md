@@ -230,7 +230,10 @@ Inside array `items`, set `"id": "<anchor>"` to create a reference point so sibl
 the *same* element can be watched as `<anchor>.<field>`. Built-ins: `{{_user_input}}`,
 `{{_user_input_normalized}}`, `{{_user_lang}}`.
 
-**UUIDs and ids** - an OSW-ID is `"OSW"` followed by a UUID without dashes. Use a random
+**UUIDs and ids** - an OSW-ID is `"OSW"` followed by a UUID without dashes. Get one from
+the `new_osw_id` tool and use it verbatim; never write one yourself. A made up id looks
+plausible but is not random - `OSWaa11bb22cc3344...`, `OSWa1b2c3d4e5f6...` and the like are
+a template being filled in, so two wikis coining the same entity produce the same id. Use a random
 uuid4 for one-off entities; use uuid5 over a canonical string (e.g. an IRI) when the id must
 be reproducible across wikis.
 

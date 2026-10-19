@@ -23,6 +23,7 @@ LABELS = {
     "get_page_content": ("Reading {arg}", "Read {arg}"),
     "get_category_schema": ("Reading the schema of {arg}", "Read the schema of {arg}"),
     "smw_ask_query": ("Querying the wiki", "Queried the wiki"),
+    "new_osw_id": ("Reserving an ID", "Reserved an ID"),
     "get_file_content": ("Reading the file {arg}", "Read the file {arg}"),
     "edit_page": ("Writing {arg}", "Wrote {arg}"),
     "delete_page": ("Deleting {arg}", "Deleted {arg}"),
