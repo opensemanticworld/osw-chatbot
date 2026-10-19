@@ -76,6 +76,10 @@ complete and directly usable.
 Most components read or write OpenSemanticLab entities. These are the patterns that work -
 use them rather than inventing endpoints. `var api = new mw.Api();` throughout.
 
+If the component writes entities or schemas, load the `osl-page-editing` skill as well: it
+has the slot data model, the autocomplete/reference rules and the schema conventions that
+the code you generate has to honour. This section covers only how to reach them from JS.
+
 ### Finding instances: the SMW ask API
 
 ```js
@@ -147,6 +151,64 @@ var jsondata = {
     label: [{ text: label, lang: mw.config.get('wgUserLanguage') || 'en' }]
 };
 ```
+
+Two rules that decide whether the page renders as anything at all:
+
+**Only write properties the category's schema declares.** A field that is not in the
+category's `jsonschema` is stored but invisible - nothing renders it and no query finds it,
+so the page looks empty even though the save succeeded. This is the most common way a
+generated component "works" and produces blank pages. Read the schema first:
+
+```js
+api.get({ action: 'query', prop: 'revisions', rvprop: 'content',
+          rvslots: 'jsonschema', titles: category, format: 'json' })
+```
+
+and remember it is inherited: most categories are just
+`{"allOf": [{"$ref": "/wiki/Category:Item?action=raw&slot=jsonschema"}]}`, which gives them
+`Category:Entity`'s properties (`label`, `description`, `image`, `attachments`, `keywords`,
+`statements`, …) and **nothing else**. If the data you need has nowhere to go, say so and
+offer to add the properties to the category schema - do not invent field names.
+
+**Never invent an OSW-ID.** Use `crypto.randomUUID()`. A hand-written
+`OSWa1b2c3d4e5f6...` pattern either collides or points at nothing.
+
+### Uploading a file
+
+A file is an entity too. `mw.Api().upload()` alone creates a bare `File:` page with no
+`jsondata`, which is not a Wiki File entity - it cannot be referenced, queried or rendered
+as an attachment. Go through `mwjson` so the entity is created with it:
+
+```js
+await mw.loader.using(['ext.mwjson.api', 'ext.OpenSemanticLab.forms']);
+var originalName = file.name;                        // keep it for the label
+var uuid = crypto.randomUUID();
+var ext = originalName.split('.').pop();
+var target = 'OSW' + uuid.replace(/-/g, '') + '.' + ext;   // mwjson.util.OswId() + ext
+Object.defineProperty(file, 'name', { writable: true, value: target });
+
+var page = await mwjson.api.getFilePage(target);
+page.file = file;
+page.file.contentBlob = file;
+page.file.changed = true;                            // this is what triggers the upload
+page.slots.jsondata = {
+    type: ['Category:OSW11a53cdfbdc24524bf8ac435cbf65d9d'],   // Wiki File
+    uuid: uuid,
+    file: 'File:' + target,                          // self-reference
+    label: [{ text: originalName, lang: 'en' }]      // the name the user knows it by
+};
+page.slots_changed.jsondata = true;
+page = await osl.util.postProcessPage(page, []);
+await mwjson.api.updatePage(page, { comment: 'MyComponent: uploaded ' + originalName });
+```
+
+Then reference `'File:' + target` from the owning entity - in its `image` property for a
+picture, or `attachments: ['File:' + target]` for anything else.
+
+> If you ever do call `mw.Api().upload()` directly, know that it **rejects even when the
+> upload succeeded** whenever the API returns warnings (a duplicate, say). The rejection
+> value carries `upload.result === 'Success'` - check for it before reporting a failure.
+> Minting a fresh `OswId()` per upload avoids the duplicate-name warning entirely.
 
 ### Labels are multilingual
 
