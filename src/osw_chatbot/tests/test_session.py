@@ -878,3 +878,26 @@ def test_the_websearch_tools_take_flat_arguments(session):
     assert set(web_search_tool.args) == {"query", "max_results"}
     assert set(simple_browse_web_page_tool.args) == {"url"}
     assert "param" not in web_search_tool.args
+
+
+def test_full_text_search_reports_results_and_emptiness(session):
+    """It returns structured hits now, not scraped Special:Search html.
+
+    The scrape missed uploaded-file text entirely - it used the default search
+    profile, which covers content namespaces only, so a phrase inside an
+    indexed PDF matched nothing - and it returned null when nothing matched,
+    which the backend raised at the model as a tool failure.
+    """
+    from osw_chatbot.toolcalling.progress import describe
+
+    tool = {t.name: t for t in session.tools}["full_text_search"]
+    doc = tool.description
+    assert "PDF" in doc
+    assert "not an error" in doc
+
+    pdf_hit = {"totalhits": 1, "results": [
+        {"title": "File:Manual.pdf", "snippet": "1.7 Referenzlogo 33"}]}
+    assert describe("full_text_search", pdf_hit) == "1 result"
+    assert describe("full_text_search", {"totalhits": 0, "results": []}) == "no results"
+    assert describe("full_text_search", {"totalhits": 57, "results": [
+        {"title": f"P{i}", "snippet": ""} for i in range(10)]}) == "10 results of 57"

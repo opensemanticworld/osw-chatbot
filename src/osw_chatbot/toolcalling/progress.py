@@ -209,9 +209,14 @@ def _describe(name, output):
         extra = output.get("slots") or []
         return shown + (f" - slots: {_clip(extra, 6)}" if extra else "")
 
-    if name == "full_text_search" and isinstance(output, str):
-        hits = output.count("<li")
-        return f"{hits} result{'s' if hits != 1 else ''}" if hits else "no results"
+    if name == "full_text_search" and isinstance(output, dict):
+        # counted <li> back when this returned scraped Special:Search html
+        found = output.get("results") or []
+        total = output.get("totalhits", len(found))
+        if not found:
+            return "no results"
+        shown = f"{len(found)} result{'s' if len(found) != 1 else ''}"
+        return f"{shown} of {total}" if total > len(found) else shown
 
     if name == "load_skill" and isinstance(output, str):
         return f"{len(output)} characters of instructions"

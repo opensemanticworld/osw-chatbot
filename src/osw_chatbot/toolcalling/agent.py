@@ -464,9 +464,9 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def full_text_search(query) -> str:
-            """Finds a pages by running a full text search in the indexed content (title, description, content). Returns a html list.
-            Anchor links contain the page title (title attribute) that can be used to load the page with the get_page_content tool.
-            Anchor links also contain the human label as inner text.
+            """Finds pages by running a full text search over everything indexed: page titles, wikitext, and the extracted text of uploaded files such as PDFs. Searches all namespaces, so a phrase that appears only inside an uploaded document is found too.
+
+            Returns {'totalhits': n, 'results': [{'title', 'snippet'}]}, where the snippet is the matching passage as plain text. An empty 'results' list means nothing matched - that is an answer, not an error. Pass a title to 'get_page_content' to read the whole page.
             """
             return await session.call_client_side_tool("full_text_search", [query])
 
