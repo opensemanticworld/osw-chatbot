@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional, Set, Union
@@ -34,6 +35,9 @@ from osw_chatbot.websearch.interative_websearch import tools as websearch_tools
 # `create_category_instance` is here for the same reason, though note the
 # browser returns as soon as the editor is open rather than awaiting it, so
 # the lock does not actually keep two editors apart.
+# How much extracted document text to hand the model at once.
+FILE_TEXT_MAX_CHARS = int(os.getenv("FILE_TEXT_MAX_CHARS", "20000"))
+
 EXCLUSIVE_CLIENT_TOOLS = {
     "edit_page",
     "delete_page",
@@ -118,6 +122,48 @@ def _tool_error_observation(error: Exception) -> str:
         f"Error: {error}. The users browser could not be reached - do not retry "
         "more than once, tell the user instead."
     )
+
+
+def _render_file_text(indexed: dict, query: str = "") -> str:
+    """Lay out extracted document text so the model can cite a page.
+
+    Page numbers only exist for formats the wiki splits per page - PDFs via
+    PdfHandler. For anything else there is one undifferentiated blob, and the
+    header says so rather than inviting an invented page number.
+    """
+    title = indexed.get("title") or "the file"
+    pages = indexed.get("pages")
+
+    if pages:
+        head = [f"Extracted text of {title}"]
+        if indexed.get("page_count"):
+            head[0] += f" ({indexed['page_count']} pages)"
+        matched = indexed.get("matched_pages")
+        if query and matched:
+            head.append(
+                f"Pages containing {query!r}: "
+                + ", ".join(str(p) for p in matched[:20])
+                + ("..." if len(matched) > 20 else "")
+            )
+        elif query:
+            head.append(f"No page contains {query!r}; showing the start instead.")
+        body = "\n\n".join(
+            f"--- page {page['page']} ---\n{page['text']}" for page in pages
+        )
+        if indexed.get("truncated"):
+            body += "\n\n[truncated - ask again with a narrower query for more]"
+        return "\n".join(head) + "\n\n" + body
+
+    text = indexed.get("text")
+    if not text:
+        return ""
+    header = f"Extracted text of {title} (no page breaks available)"
+    if indexed.get("truncated"):
+        text += (
+            f"\n\n[truncated - showing {len(text)} of "
+            f"{indexed.get('chars')} characters]"
+        )
+    return f"{header}\n\n{text}"
 
 
 def _tool_input_observation(error: Exception) -> str:
@@ -565,11 +611,27 @@ class ChatSession:
             return await session.call_client_side_tool("smw_ask_query", [query])
 
         @langchain_core.tools.tool
-        async def get_file_content(file_title) -> str:
+        async def get_file_content(file_title, query: str = "") -> str:
             """Gets the content of a wiki file by its title (File:OSW...). Can handle images and documents.
+            For documents such as PDFs this returns the text the wiki already extracted, page by page, so a quote can be cited as "page N of <file title>". Pass 'query' with the term you are looking for and only the pages containing it come back - do that for a long document rather than reading it from the start. Long results are truncated and say so.
             Important: Use this function only for file in the current wiki domain, not for external urls retrieved via web search!
             For file links from web search use the web search tool to get the content.
             """
+            # The indexed text first. Fetching the file itself meant base64 over
+            # the websocket - a 16 MB pdf becomes ~21.5 MB, past bokeh's 20 MB
+            # message limit, so the reply was dropped and the call hung until it
+            # timed out. The wiki already has the text; ask for that.
+            try:
+                indexed = await session.call_client_side_tool(
+                    "get_file_text", [file_title, FILE_TEXT_MAX_CHARS, query or ""]
+                )
+            except ClientToolError:
+                indexed = None
+            if isinstance(indexed, dict):
+                rendered = _render_file_text(indexed, query)
+                if rendered:
+                    return rendered
+
             result = await session.call_client_side_tool("get_file_data_url", [file_title])
 
             # result is a data_url, e.g. data:/plain;base64,....

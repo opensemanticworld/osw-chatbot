@@ -901,3 +901,38 @@ def test_full_text_search_reports_results_and_emptiness(session):
     assert describe("full_text_search", {"totalhits": 0, "results": []}) == "no results"
     assert describe("full_text_search", {"totalhits": 57, "results": [
         {"title": f"P{i}", "snippet": ""} for i in range(10)]}) == "10 results of 57"
+
+
+def test_document_text_is_rendered_with_page_numbers(session):
+    """Citations need a page, and the file itself must never cross the wire.
+
+    A 16 MB pdf becomes ~21.5 MB as a base64 data url, past bokeh's 20 MB
+    websocket limit - the reply was dropped and the call hung until timeout.
+    """
+    from osw_chatbot.toolcalling.agent import _render_file_text
+
+    indexed = {
+        "title": "File:Manual.pdf", "page_count": 279,
+        "matched_pages": [2, 5, 33],
+        "pages": [{"page": 2, "text": "1.7 Referenzlogo"},
+                  {"page": 5, "text": "Referenzlogo rules"}],
+        "truncated": True,
+    }
+    out = _render_file_text(indexed, "Referenzlogo")
+    assert "File:Manual.pdf (279 pages)" in out
+    assert "Pages containing 'Referenzlogo': 2, 5, 33" in out
+    assert "--- page 2 ---" in out and "--- page 5 ---" in out
+    assert "truncated" in out
+
+    # a format without page breaks must not invite an invented page number
+    blob = _render_file_text(
+        {"title": "File:Sheet.xlsx", "pages": None, "text": "some text",
+         "chars": 9, "truncated": False})
+    assert "no page breaks available" in blob
+    assert "--- page" not in blob, "no page marker when there are no pages"
+
+    assert _render_file_text({"title": "x", "pages": None, "text": ""}) == ""
+
+    tool = {t.name: t for t in session.tools}["get_file_content"]
+    assert set(tool.args) == {"file_title", "query"}
+    assert "page N of" in tool.description
