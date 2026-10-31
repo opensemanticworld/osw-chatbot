@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from osw_chatbot.config import (
     CLIENT_TOOL_TIMEOUT,
+    MAX_INLINE_FILE_BYTES,
     CONFIRM_TIMEOUT,
     PARENT_ORIGINS,
 )
@@ -148,7 +149,11 @@ def _render_file_text(indexed: dict, query: str = "") -> str:
         elif query:
             head.append(f"No page contains {query!r}; showing the start instead.")
         body = "\n\n".join(
-            f"--- page {page['page']} ---\n{page['text']}" for page in pages
+            # the url renders that single page, so a citation can point at it
+            f"--- page {page['page']}"
+            + (f" | {page['url']}" if page.get("url") else "")
+            + f" ---\n{page['text']}"
+            for page in pages
         )
         if indexed.get("truncated"):
             body += "\n\n[truncated - ask again with a narrower query for more]"
@@ -613,7 +618,7 @@ class ChatSession:
         @langchain_core.tools.tool
         async def get_file_content(file_title, query: str = "") -> str:
             """Gets the content of a wiki file by its title (File:OSW...). Can handle images and documents.
-            For documents such as PDFs this returns the text the wiki already extracted, page by page, so a quote can be cited as "page N of <file title>". Pass 'query' with the term you are looking for and only the pages containing it come back - do that for a long document rather than reading it from the start. Long results are truncated and say so.
+            For documents such as PDFs this returns the text the wiki already extracted, page by page. Each page comes with the url that renders exactly that page, so cite a quote by linking to it - never cite a page number without the link, and never build such a url by hand. Pass 'query' with the term you are looking for and only the pages containing it come back - do that for a long document rather than reading it from the start. Long results are truncated and say so.
             Important: Use this function only for file in the current wiki domain, not for external urls retrieved via web search!
             For file links from web search use the web search tool to get the content.
             """
@@ -632,7 +637,9 @@ class ChatSession:
                 if rendered:
                     return rendered
 
-            result = await session.call_client_side_tool("get_file_data_url", [file_title])
+            result = await session.call_client_side_tool(
+                "get_file_data_url", [file_title, MAX_INLINE_FILE_BYTES]
+            )
 
             # result is a data_url, e.g. data:/plain;base64,....
 

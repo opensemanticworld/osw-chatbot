@@ -55,6 +55,13 @@ CHATBOT_INTRO = os.getenv(
 # hides it, leaving the intro alone.
 CHATBOT_GREETING = os.getenv("CHATBOT_GREETING", "what's on your mind?").strip()
 
+# Largest file the browser may inline as a base64 data url. Base64 adds a
+# third, and bokeh drops a websocket message over its limit (20 MB by default)
+# without telling anyone - the call simply never comes back. Keep this below
+# three quarters of that; raise both together, with --websocket-max-message-size
+# on the panel serve command, if a genuinely large image has to be read.
+MAX_INLINE_FILE_BYTES = int(os.getenv("MAX_INLINE_FILE_BYTES", str(12 * 1024 * 1024)))
+
 # Largest attachment the browser will stage, in bytes.
 ATTACHMENT_MAX_BYTES = int(os.getenv("ATTACHMENT_MAX_BYTES", str(20 * 1024 * 1024)))
 

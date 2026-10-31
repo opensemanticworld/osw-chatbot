@@ -914,14 +914,18 @@ def test_document_text_is_rendered_with_page_numbers(session):
     indexed = {
         "title": "File:Manual.pdf", "page_count": 279,
         "matched_pages": [2, 5, 33],
-        "pages": [{"page": 2, "text": "1.7 Referenzlogo"},
-                  {"page": 5, "text": "Referenzlogo rules"}],
+        "pages": [{"page": 2, "url": "https://wiki.example/w/index.php?title=File%3AManual.pdf&page=2",
+                   "text": "1.7 Referenzlogo"},
+                  {"page": 5, "url": "https://wiki.example/w/index.php?title=File%3AManual.pdf&page=5",
+                   "text": "Referenzlogo rules"}],
         "truncated": True,
     }
     out = _render_file_text(indexed, "Referenzlogo")
     assert "File:Manual.pdf (279 pages)" in out
     assert "Pages containing 'Referenzlogo': 2, 5, 33" in out
-    assert "--- page 2 ---" in out and "--- page 5 ---" in out
+    assert "--- page 2 |" in out and "--- page 5 |" in out
+    # the citation link must travel with the page it belongs to
+    assert "title=File%3AManual.pdf&page=2" in out
     assert "truncated" in out
 
     # a format without page breaks must not invite an invented page number
@@ -935,4 +939,4 @@ def test_document_text_is_rendered_with_page_numbers(session):
 
     tool = {t.name: t for t in session.tools}["get_file_content"]
     assert set(tool.args) == {"file_title", "query"}
-    assert "page N of" in tool.description
+    assert "url that renders exactly that page" in tool.description
