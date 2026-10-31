@@ -49,10 +49,18 @@ class WebSearchResult(BaseModel):
     results: List[SearchResult]
 
 @langchain_core.tools.tool
-async def web_search_tool(param: WebSearchParam) -> WebSearchResult:
+async def web_search_tool(query: str, max_results: int = 10) -> WebSearchResult:
     """Uses a search engine to search the web for the given query and returns the results.
+
+    Args:
+        query: the search query a human would type into the search bar.
+        max_results: how many results to return.
     """
-    return await web_search(param)
+    # Flat arguments on purpose: with a single nested `param` object the model
+    # sends {"query": ...} instead of {"param": {"query": ...}}, and the
+    # resulting pydantic error is not a ToolException, so it escapes
+    # handle_tool_error and takes the whole turn down with a traceback.
+    return await web_search(WebSearchParam(query=query, max_results=max_results))
     
 async def web_search(param: WebSearchParam) -> WebSearchResult:
     """Uses a search engine to search the web for the given query and returns the results.
@@ -290,12 +298,15 @@ async def browse_web_page(param: BrowseWebPageParam) -> BrowseWebPageResult:
     return result
 
 @langchain_core.tools.tool
-async def simple_browse_web_page_tool(param: SimpleBrowseWebPageParam) -> SimpleBrowseWebPageResult:
+async def simple_browse_web_page_tool(url: str) -> SimpleBrowseWebPageResult:
     """Loads the given web page and returns the text content and links.
     Links can be followed to learn more about specific topics.
     Links can also be files (pdf, docx, xlsx, pptx, etc.) that are downloaded and their content extracted.
+
+    Args:
+        url: the URL of the web page to load.
     """
-    return await simple_browse_web_page(param)
+    return await simple_browse_web_page(SimpleBrowseWebPageParam(url=url))
 
 #buffer = ""
 

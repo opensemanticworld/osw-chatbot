@@ -120,6 +120,22 @@ def _tool_error_observation(error: Exception) -> str:
     )
 
 
+def _tool_input_observation(error: Exception) -> str:
+    """Feed a malformed tool call back to the model instead of crashing.
+
+    Pydantic raises ValidationError while parsing the arguments, before the
+    tool body runs. It is not a ToolException, so handle_tool_error never sees
+    it and the whole turn dies with a traceback in the chat - twice now: a
+    nested `param` object the model flattened, and `slots` sent as a JSON
+    string. Telling the model what the arguments should look like lets it
+    correct itself.
+    """
+    return (
+        f"Error: the arguments did not match this tool's schema. {error}. "
+        "Look at the tool's parameters and call it again with the right ones."
+    )
+
+
 class WebPage(BaseModel):
     url: str
     """The full url of the web page."""
@@ -224,6 +240,11 @@ class ChatSession:
         self.tools = self._build_tools()
         if "websearch" in self.actions:
             self.tools += [self._gated_websearch_tool(t) for t in websearch_tools]
+        # The websearch tools join after _build_tools, so they used to miss both
+        # handlers - which is how a malformed web_search_tool call killed a turn.
+        for tool in self.tools:
+            tool.handle_tool_error = _tool_error_observation
+            tool.handle_validation_error = _tool_input_observation
         self.agent_executor = AgentExecutor(
             agent=create_tool_calling_agent(
                 llm, self.tools, build_prompt(skill_index(self.skills))
@@ -689,6 +710,7 @@ class ChatSession:
             tools.append(load_skill)
         for tool in tools:
             tool.handle_tool_error = _tool_error_observation
+            tool.handle_validation_error = _tool_input_observation
         return tools
 
     async def _resolve_references(self, data, schema):

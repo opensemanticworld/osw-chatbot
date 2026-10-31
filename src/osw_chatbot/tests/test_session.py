@@ -845,3 +845,36 @@ def test_handled_replies_are_acknowledged_so_the_browser_can_forget_them(session
         assert len(session._seen_events) == before
 
     asyncio.run(scenario())
+
+
+def test_malformed_tool_arguments_reach_the_model_not_the_user(session):
+    """Pydantic rejects bad arguments before the tool body runs.
+
+    That ValidationError is not a ToolException, so handle_tool_error never saw
+    it and the turn died with a traceback in the chat - twice: a nested `param`
+    object the model flattened, and `slots` passed as a JSON string.
+    """
+    from osw_chatbot.toolcalling.agent import _tool_input_observation
+
+    for tool in session.tools:
+        assert tool.handle_validation_error, f"{tool.name} has no validation handler"
+        assert tool.handle_tool_error, f"{tool.name} has no error handler"
+
+    async def scenario():
+        tool = {t.name: t for t in session.tools}["get_page_content"]
+        # wrong shape entirely - must come back as an observation, not a raise
+        observation = await tool.arun({"nonexistent_argument": 1})
+        assert "did not match this tool's schema" in observation
+
+    asyncio.run(scenario())
+    assert "call it again" in _tool_input_observation(ValueError("x"))
+
+
+def test_the_websearch_tools_take_flat_arguments(session):
+    """A single nested `param` object is the shape models get wrong."""
+    from osw_chatbot.websearch.interative_websearch import (
+        simple_browse_web_page_tool, web_search_tool)
+
+    assert set(web_search_tool.args) == {"query", "max_results"}
+    assert set(simple_browse_web_page_tool.args) == {"url"}
+    assert "param" not in web_search_tool.args
