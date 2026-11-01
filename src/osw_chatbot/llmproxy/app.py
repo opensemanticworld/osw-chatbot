@@ -107,20 +107,13 @@ if ALLOWED_ORIGINS:
         allow_origins=ALLOWED_ORIGINS,
         allow_credentials=True,
         allow_methods=["POST", "GET", "OPTIONS"],
-        # Must cover every header the provider SDK sends, or the browser's preflight
-        # fails and the request never happens. The Anthropic provider sends the key as
-        # x-api-key plus anthropic-version, which a list of just Authorization and
-        # Content-Type would reject - and the failure shows up as an opaque network
-        # error in the sandbox, with nothing in this service's log at all.
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "Accept",
-            "x-api-key",
-            "anthropic-version",
-            "anthropic-beta",
-            "anthropic-dangerous-direct-browser-access",
-        ],
+        # Every header, deliberately. The provider SDK sends more than its documented
+        # set - user-agent and a family of x-stainless-* retry headers - and an
+        # allow-list that misses one fails the preflight with a 400, which surfaces in
+        # the browser as an opaque CORS error and never reaches this service's log.
+        # The origin restriction above is the actual control here; enumerating headers
+        # adds no security, only a way to break on the SDK's next release.
+        allow_headers=["*"],
     )
 
 
