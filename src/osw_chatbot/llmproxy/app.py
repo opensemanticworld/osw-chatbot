@@ -39,18 +39,45 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from osw_chatbot.auth import decode_token
 
-#: Where completions actually go. The same Foundry endpoint the chat backend uses, so a
-#: deployment configures one provider rather than two.
-UPSTREAM_BASE_URL = os.getenv(
-    "LLM_PROXY_UPSTREAM_URL", os.getenv("OPENAI_BASE_URL", "")
-).rstrip("/")
-UPSTREAM_API_KEY = os.getenv("LLM_PROXY_UPSTREAM_KEY", os.getenv("OPENAI_API_KEY", ""))
+#: Follows LLM_PROVIDER, the same switch osw_chatbot.llm reads, so the sandbox talks to
+#: whatever the chat backend was already configured to talk to. A deployment that set up
+#: the chat assistant has already configured this one.
+#:
+#: The two surfaces differ in more than a url. Anthropic authenticates with an `x-api-key`
+#: header and no scheme; the OpenAI-compatible surface uses `Authorization: Bearer`.
+#: Getting that wrong produces a 401 from the vendor that looks exactly like a bad wiki
+#: token, so it is explicit rather than guessed per request.
+_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+if _PROVIDER == "claude":
+    _DEFAULT_URL = os.getenv("ANTHROPIC_BASE_URL", "")
+    _DEFAULT_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    _DEFAULT_HEADER, _DEFAULT_SCHEME = "x-api-key", ""
+else:
+    _DEFAULT_URL = os.getenv("OPENAI_BASE_URL", "")
+    _DEFAULT_KEY = os.getenv("OPENAI_API_KEY", "")
+    _DEFAULT_HEADER, _DEFAULT_SCHEME = "authorization", "Bearer"
+
+UPSTREAM_BASE_URL = os.getenv("LLM_PROXY_UPSTREAM_URL", _DEFAULT_URL).rstrip("/")
+UPSTREAM_API_KEY = os.getenv("LLM_PROXY_UPSTREAM_KEY", _DEFAULT_KEY)
+UPSTREAM_AUTH_HEADER = os.getenv("LLM_PROXY_AUTH_HEADER", _DEFAULT_HEADER).lower()
+UPSTREAM_AUTH_SCHEME = os.getenv("LLM_PROXY_AUTH_SCHEME", _DEFAULT_SCHEME).strip()
+
+#: Client headers worth forwarding. An allowlist rather than a blocklist: the caller is a
+#: browser we do not control, and the two headers that must *not* reach the vendor are
+#: exactly the ones carrying the caller's own credential.
+FORWARD_HEADERS = {
+    "content-type",
+    "accept",
+    "anthropic-version",
+    "anthropic-beta",
+}
 
 #: The action a user needs for the sandbox. Mirrors $wgChatbotActions, which is what the
 #: wiki signs into the token.
@@ -80,11 +107,39 @@ if ALLOWED_ORIGINS:
         allow_origins=ALLOWED_ORIGINS,
         allow_credentials=True,
         allow_methods=["POST", "GET", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        # Must cover every header the provider SDK sends, or the browser's preflight
+        # fails and the request never happens. The Anthropic provider sends the key as
+        # x-api-key plus anthropic-version, which a list of just Authorization and
+        # Content-Type would reject - and the failure shows up as an opaque network
+        # error in the sandbox, with nothing in this service's log at all.
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "x-api-key",
+            "anthropic-version",
+            "anthropic-beta",
+            "anthropic-dangerous-direct-browser-access",
+        ],
     )
 
 
-def _caller(authorization: str | None) -> dict[str, Any]:
+def _token_from(request: Request) -> str | None:
+    """The wiki token, wherever the provider happened to put it.
+
+    The AI SDK sends the configured api key as `Authorization: Bearer` for
+    OpenAI-compatible providers but as `x-api-key` for Anthropic. The sandbox puts the
+    wiki's token in that field either way, so both are accepted rather than requiring the
+    browser to special-case us.
+    """
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip() or None
+    api_key = request.headers.get("x-api-key", "").strip()
+    return api_key or None
+
+
+def _caller(token: str | None) -> dict[str, Any]:
     """The verified token payload, or 401/403."""
     if not os.getenv("CHATBOT_SHARED_SECRET", ""):
         # Refusing rather than running open. An unauthenticated proxy in front of a paid
@@ -94,10 +149,12 @@ def _caller(authorization: str | None) -> dict[str, Any]:
             status_code=503,
             detail="CHATBOT_SHARED_SECRET is not set, so no token can be verified",
         )
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
+    if not token:
+        raise HTTPException(
+            status_code=401, detail="missing token (Authorization: Bearer, or x-api-key)"
+        )
 
-    payload = decode_token(authorization.split(" ", 1)[1].strip())
+    payload = decode_token(token)
     if payload is None:
         raise HTTPException(status_code=401, detail="token is not valid or has expired")
 
@@ -122,18 +179,22 @@ def healthz() -> dict[str, Any]:
     }
 
 
-@app.api_route("/v1/{path:path}", methods=["POST", "GET"])
-async def passthrough(
-    path: str, request: Request, authorization: str | None = Header(default=None)
-) -> Any:
-    """Forward an OpenAI-compatible call upstream, with our key rather than the caller's.
+@app.api_route("/{path:path}", methods=["POST", "GET"])
+async def passthrough(path: str, request: Request) -> Any:
+    """Forward a provider call upstream, with our credential instead of the caller's.
 
-    A passthrough rather than a typed endpoint: the client is the AI SDK's
-    OpenAI-compatible provider, and pinning a request schema here would mean editing this
-    file every time it starts sending a new field. What is *not* passed through is the
-    caller's Authorization header - it is replaced, which is the entire point.
+    The whole path is preserved - `/v1/messages` stays `/v1/messages` - because the
+    provider SDK builds it and only it knows the shape its vendor expects. Mounting at
+    the root rather than under `/v1` is what makes the proxy work for Anthropic and for
+    OpenAI-compatible endpoints without a translation layer. (`/healthz` is declared
+    above, and FastAPI matches in declaration order, so it is not swallowed.)
+
+    A passthrough rather than a typed endpoint: the client is the AI SDK, and pinning a
+    request schema here would mean editing this file every time it sends a new field.
+    What is *not* passed through is the caller's own credential header - it is replaced,
+    which is the entire point of the service.
     """
-    payload = _caller(authorization)
+    payload = _caller(_token_from(request))
     if not UPSTREAM_BASE_URL or not UPSTREAM_API_KEY:
         raise HTTPException(status_code=503, detail="no upstream model is configured")
 
@@ -145,14 +206,22 @@ async def passthrough(
         except ValueError:
             wants_stream = False
 
-    url = f"{UPSTREAM_BASE_URL}/{path}"
+    url = f"{UPSTREAM_BASE_URL}/{path.lstrip('/')}"
+
     headers = {
-        "Authorization": f"Bearer {UPSTREAM_API_KEY}",
-        "Content-Type": request.headers.get("content-type", "application/json"),
-        # Who this is on behalf of, for the provider's own logs. Not trusted by anything
-        # downstream - it is derived from a token we just verified, not from the client.
-        "X-OSW-User": str(payload.get("u", "")),
+        name: value
+        for name, value in request.headers.items()
+        if name.lower() in FORWARD_HEADERS
     }
+    headers.setdefault("content-type", "application/json")
+    headers[UPSTREAM_AUTH_HEADER] = (
+        f"{UPSTREAM_AUTH_SCHEME} {UPSTREAM_API_KEY}".strip()
+        if UPSTREAM_AUTH_SCHEME
+        else UPSTREAM_API_KEY
+    )
+    # Who this is on behalf of, for the provider's own logs. Derived from a token just
+    # verified here, never from anything the client claimed about itself.
+    headers["X-OSW-User"] = str(payload.get("u", ""))
 
     client = httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
     upstream = client.build_request(request.method, url, content=body, headers=headers)
@@ -168,9 +237,9 @@ async def passthrough(
             media_type=response.headers.get("content-type", "application/json"),
         )
 
-    # Streaming: the response is handed back chunk by chunk, so the user sees tokens as
-    # they arrive rather than waiting for the whole completion. The client is closed when
-    # the generator finishes, not before - closing it here would cancel the stream.
+    # Streaming: relayed chunk by chunk so the user sees tokens as they arrive. The
+    # client is closed when the generator finishes, not before - closing it here would
+    # cancel the stream mid-flight.
     response = await client.send(upstream, stream=True)
 
     async def relay():
