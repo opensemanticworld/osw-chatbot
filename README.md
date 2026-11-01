@@ -42,6 +42,44 @@ or
 docker compose up osw-openai-api-wrapper
 ```
 
+### The sandbox LLM proxy
+
+```bash
+docker compose up osw-llm-proxy
+```
+
+`osw_chatbot.llmproxy` sits between the wiki's in-browser JupyterLite sandbox and the
+model provider. The sandbox is a static site, so whatever it ships can be read by anyone
+who can read the wiki - it can never hold an API key. This holds the key instead, and
+decides who may spend it by verifying the signed token `action=chatbottoken` issues.
+
+It is a separate service rather than a route on `osw-chatbot`, which is a Bokeh websocket
+app with per-user session state and `--num-procs 4`; a stateless streaming proxy has no
+use for that process model. It is also deliberately not a MediaWiki REST endpoint:
+streaming a completion through PHP-FPM holds a worker for the whole response, and a
+handful of concurrent chats would starve the wiki itself.
+
+What it refuses, and these are the interesting cases - see
+`src/osw_chatbot/tests/test_llmproxy.py`:
+
+| | |
+| --- | --- |
+| no token, a forged one, or one signed with another secret | 401 |
+| an expired token | 401 |
+| a token without the `code-sandbox` action | 403 |
+| `CHATBOT_SHARED_SECRET` unset | 503, rather than running open |
+
+That last one differs from the chat backend, which falls back to anonymous when no secret
+is configured. The chat backend cannot spend money against a vendor account; this can, so
+it refuses to start instead of quietly serving everybody.
+
+The caller's `Authorization` header is replaced, never forwarded - that is the entire
+point. The verified username is passed on as `X-OSW-User` for the provider's own logs.
+
+Configuration lives in `.env` under `LLM_PROXY_*`; the upstream defaults to
+`OPENAI_BASE_URL` / `OPENAI_API_KEY`, so a deployment that already set those needs
+nothing more than `LLM_PROXY_SERVER`.
+
 ## Development
 
 ```bash
