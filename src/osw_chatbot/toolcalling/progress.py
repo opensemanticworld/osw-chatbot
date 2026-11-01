@@ -35,6 +35,14 @@ LABELS = {
     "web_search_tool": ("Searching the web for {arg}", "Searched the web for {arg}"),
     "simple_browse_web_page_tool": ("Reading {arg}", "Read {arg}"),
     "load_skill": ("Reading the {arg} instructions", "Read the {arg} instructions"),
+    "discover_skills": ("Looking for skills on this wiki", "Looked for skills"),
+    "save_skill": ("Saving the {arg} skill", "Saved the {arg} skill"),
+    "open_sandbox": ("Opening the sandbox", "Opened the sandbox"),
+    "create_notebook": ("Writing the notebook {arg}", "Wrote the notebook {arg}"),
+    # No {arg}: the argument is a block of code, and a clipped first line of it reads as
+    # noise in a step title.
+    "run_in_sandbox": ("Running code in the sandbox", "Ran code in the sandbox"),
+    "sandbox_status": ("Checking the sandbox", "Checked the sandbox"),
 }
 
 
@@ -42,7 +50,7 @@ def summarize(raw) -> str:
     """One short, readable fragment from whatever the tool was called with."""
     if isinstance(raw, dict):
         for key in ("title", "titles", "query", "page", "name", "topic",
-                    "category_page", "file_title", "x_path", "url"):
+                    "category_page", "file_title", "x_path", "url", "notebook"):
             if raw.get(key):
                 raw = raw[key]
                 break
@@ -164,6 +172,34 @@ def _describe(name, output):
     # the write tools report refusals as data
     if isinstance(output, dict) and output.get("ok") is False:
         return str(output.get("message") or output.get("code") or "failed")
+
+    if name == "discover_skills":
+        if not output:
+            return "this wiki has no skills of its own"
+        names = [s.get("name", "") for s in output if isinstance(s, dict)]
+        return f"{len(names)} skill{'s' if len(names) != 1 else ''}: " + _clip(names)
+
+    if name == "save_skill":
+        return str((output or {}).get("title") or "saved")
+
+    if name == "sandbox_status":
+        if not isinstance(output, dict):
+            return ""
+        if not output.get("open"):
+            return "not open"
+        return "ready" if output.get("ready") else "still starting"
+
+    if name == "run_in_sandbox":
+        if not isinstance(output, dict):
+            return ""
+        if output.get("error"):
+            return str(output["error"])
+        # The cell's own output, which is what the user wants to see in the step - not
+        # the shape of the envelope it arrived in.
+        return " ".join(str(output.get("output") or "").split()) or "no output"
+
+    if name == "create_notebook":
+        return str((output or {}).get("path") or (output or {}).get("name") or "created")
 
     if name == "where_am_i":
         title = getattr(output, "title", None) or (output or {}).get("title")

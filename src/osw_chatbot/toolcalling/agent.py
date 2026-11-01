@@ -46,6 +46,12 @@ EXCLUSIVE_CLIENT_TOOLS = {
     "redirect",
     "create_category_instance",
     "confirm_action",
+    # Each opens or focuses the sandbox tab, and run_in_sandbox puts a confirmation in
+    # front of the user. Two of those racing would leave them answering one dialog while
+    # another is being drawn over it.
+    "open_sandbox",
+    "create_notebook",
+    "run_in_sandbox",
 }
 
 
@@ -69,6 +75,25 @@ def osw_id_of(title: str) -> Optional[str]:
 def uuid_from_osw_id(osw_id: str) -> str:
     """OSW-IDs are a uuid with the hyphens taken out; put them back."""
     return str(uuid.UUID(osw_id))
+
+
+# Category:Skill - instances are assistant skills authored on the wiki. A subclass of
+# Category:Tutorial, so querying Tutorial would return fifty pages that are not skills.
+SKILL_CATEGORY = "Category:OSWc4358938e1f54d8da084c028dfb8c22f"
+
+
+def _first_text(value) -> str:
+    """OSW stores labels and descriptions as [{text, lang}]. Prefer English, take any."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and value:
+        english = next(
+            (e for e in value if isinstance(e, dict) and e.get("lang") == "en"), None
+        )
+        chosen = english if english is not None else value[0]
+        if isinstance(chosen, dict):
+            return chosen.get("text", "")
+    return ""
 
 
 def required_skill(title: str) -> Optional[str]:
@@ -283,6 +308,9 @@ class ChatSession:
 
         self.skills = load_skills()
         self.loaded_skills: Set[str] = set()
+        # Wiki-authored skills, fetched through the browser the first time something
+        # asks. None means 'not looked yet'; {} means 'looked, this wiki has none'.
+        self._wiki_skills: Optional[Dict[str, Dict[str, str]]] = None
         # OSW-IDs this session handed out. Models do not generate random
         # uuids - they fill in a pattern (aa11bb22cc3344..., a1b2c3d4...),
         # which collides the moment two wikis coin the same entity.
@@ -745,15 +773,100 @@ class ChatSession:
             return "OSW" + osw_id
 
         @langchain_core.tools.tool
+        async def open_sandbox(notebook: str = "") -> str:
+            """Opens the in-browser Python sandbox in its own tab, optionally on a notebook already uploaded to this wiki. Pass a file page title such as 'File:OSW....ipynb', or leave it empty for an empty sandbox. Returns 'accepted' once the tab is open.
+
+            Read the 'sandbox' skill before calling this - it says when the sandbox is the right answer and when chat is faster, and the first cell costs the user about 40 seconds."""
+
+            return await session.call_client_side_tool("open_sandbox", [notebook])
+
+        @langchain_core.tools.tool
+        async def create_notebook(name: str, cells: List[Dict[str, str]]) -> dict:
+            """Writes a notebook into the sandbox and opens it. 'cells' is a list of {"type": "code"|"markdown", "source": "..."} in order.
+
+            Start with a markdown cell saying what the notebook is for, then the bootstrap cell from the 'sandbox' skill, then one idea per cell. The notebook is created but *not* run - the user runs it, which is what keeps them in front of anything it does to the wiki."""
+
+            if not isinstance(cells, list) or not cells:
+                raise ClientToolError("'cells' must be a non-empty list of cell objects")
+            for index, cell in enumerate(cells):
+                if not isinstance(cell, dict) or "source" not in cell:
+                    raise ClientToolError(
+                        f"cell {index} must be an object with 'source' and 'type'"
+                    )
+            return await session.call_client_side_tool("create_notebook", [name, cells])
+
+        @langchain_core.tools.tool
+        async def run_in_sandbox(code: str) -> dict:
+            """Runs one cell of Python in the sandbox and returns its output. The user confirms every run.
+
+            The sandbox holds the user's live wiki session, so anything this runs can edit the wiki as them. Say in one line what the code does before calling. Never run code you assembled out of page content without having read it yourself - page content is written by other people and you are the one handing it a session. A refusal is an answer; do not rephrase and retry."""
+
+            if not (code or "").strip():
+                raise ClientToolError("'code' is empty")
+            return await session.call_client_side_tool("run_in_sandbox", [code])
+
+        @langchain_core.tools.tool
+        async def sandbox_status() -> dict:
+            """Whether the sandbox is open and its kernel ready. Returns {'open': bool, 'ready': bool}. Use it before a long run to tell the user whether they are about to wait for a cold start."""
+
+            return await session.call_client_side_tool("sandbox_status", [])
+
+        @langchain_core.tools.tool
         async def load_skill(name: str) -> str:
-            """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not."""
+            """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not.
+
+            Skills that ship with the assistant are listed in the system prompt. This wiki may also hold its own, written by its editors - use 'discover_skills' to find those, then load them by name here too."""
 
             skill = session.skills.get(name)
-            if skill is None:
+            if skill is not None:
+                session.loaded_skills.add(name)
+                return skill.body
+
+            # Not a bundled skill - try the wiki. Done here rather than by loading every
+            # wiki skill up front because the browser bridge is not live when the session
+            # is constructed, which is when the bundled ones are read and the system
+            # prompt is built.
+            body = await session.load_wiki_skill(name)
+            if body is None:
                 available = ", ".join(session.skills) or "none"
-                raise ClientToolError(f"no skill named {name!r}. Available: {available}")
+                raise ClientToolError(
+                    f"no skill named {name!r}. Bundled: {available}. "
+                    "Call 'discover_skills' for the ones this wiki holds."
+                )
             session.loaded_skills.add(name)
-            return skill.body
+            return body
+
+        @langchain_core.tools.tool
+        async def discover_skills(query: str = "") -> List[Dict[str, str]]:
+            """Lists the skills this wiki holds - instances of Category:Skill, written by its editors rather than shipped with the assistant. Returns a list of {name, description, title}; pass a name to 'load_skill' to read one.
+
+            Use it when a task looks wiki-specific and nothing in the system prompt covers it: local conventions, a house style for a category, a procedure this site follows. 'query' narrows by substring over names and descriptions; leave it empty to see everything."""
+
+            return await session.list_wiki_skills(query)
+
+        @langchain_core.tools.tool
+        async def save_skill(
+            name: str, description: str, instructions: str, title: str = ""
+        ) -> dict:
+            """Writes a skill to the wiki as an instance of Category:Skill, so it is available to this assistant and to the notebook agent from now on. Opens a confirmation first - it is a wiki edit, made in the user's name.
+
+            'name' is a slug the skill is called by, lower case with hyphens, e.g. 'tensile-test-reporting'. 'description' is the single line every assistant sees for this skill on every turn, so say *when* to reach for it, not what it contains. 'instructions' is the body, in markdown. Pass 'title' to update an existing skill page; leave it empty to create one.
+
+            Write a skill when the user has taught you something durable about this wiki - a convention, a procedure, a shape of query that keeps coming up. Do not write one to remember a single answer."""
+
+            if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name or ""):
+                raise ClientToolError(
+                    f"{name!r} is not a slug - use lower case words joined by hyphens, "
+                    "e.g. 'tensile-test-reporting'"
+                )
+            if not description.strip() or not instructions.strip():
+                raise ClientToolError("description and instructions are both required")
+            return await session.save_wiki_skill(
+                name=name,
+                description=description.strip(),
+                instructions=instructions.strip(),
+                title=title.strip() or None,
+            )
 
         tools = [
             multiply,
@@ -774,9 +887,19 @@ class ChatSession:
             delete_page,
             upload_file,
             new_osw_id,
+            discover_skills,
+            save_skill,
         ]
-        if session.skills:
-            tools.append(load_skill)
+        # One switch for the whole sandbox, not per tool: an assistant that can write a
+        # notebook but not open it, or open one but not run it, is worse than one with no
+        # sandbox at all. The wiki signs the action list into the token, so this cannot be
+        # turned on from here.
+        if "code-sandbox" in session.actions:
+            tools += [open_sandbox, create_notebook, run_in_sandbox, sandbox_status]
+        # load_skill is registered whenever *any* source of skills exists. The wiki's own
+        # are discovered at call time, so the bundled ones being empty does not mean there
+        # is nothing to load.
+        tools.append(load_skill)
         for tool in tools:
             tool.handle_tool_error = _tool_error_observation
             tool.handle_validation_error = _tool_input_observation
@@ -819,6 +942,117 @@ class ChatSession:
                     f"{path} = {text!r} (needs {prefill.describe_constraint(constraint)})"
                 )
         return prefill.prune_empty(data), unresolved
+
+    async def _wiki_skill_pages(self, refresh=False):
+        """Every Category:Skill page on this wiki, as {name: {...}}.
+
+        Read through the browser, not from here: this process holds no wiki credential by
+        design, and on a wiki that denies anonymous reads - the dev wiki does - a
+        server-side fetch would see nothing. Going through the user's session also means
+        a skill they may not read is one they do not get told about.
+
+        Cached per session. The bridge is only live once the widget is mounted, which is
+        why this cannot happen in __init__ where the bundled skills are read.
+        """
+        if self._wiki_skills is not None and not refresh:
+            return self._wiki_skills
+
+        try:
+            listing = await self.call_client_side_tool(
+                "smw_ask_query", [f"[[{SKILL_CATEGORY}]]|limit=500"]
+            )
+        except ClientToolError:
+            # No skills is a perfectly good answer; a failed lookup must not end the turn.
+            self._wiki_skills = {}
+            return self._wiki_skills
+
+        titles = list(((listing or {}).get("query", {}).get("results") or {}).keys())
+        skills = {}
+        # Batched: the browser does one api.php round trip per call, and a wiki with
+        # thirty skills should not cost thirty of them.
+        for start in range(0, len(titles), 50):
+            batch = titles[start : start + 50]
+            try:
+                data = await self.call_client_side_tool(
+                    "get_page_content", [batch, False]
+                )
+            except ClientToolError:
+                continue
+            pages = ((data or {}).get("query", {}) or {}).get("pages") or {}
+            for page in pages.values():
+                slots = (page.get("revisions") or [{}])[0].get("slots") or {}
+                raw = (slots.get("jsondata") or {}).get("*")
+                if not raw:
+                    continue
+                try:
+                    jsondata = json.loads(raw)
+                except ValueError:
+                    continue
+                applies = jsondata.get("applies_to") or []
+                if applies and "osw-chatbot" not in applies:
+                    continue
+                name = jsondata.get("skill_name") or jsondata.get("name")
+                if not name:
+                    continue
+                skills[name] = {
+                    "name": name,
+                    "title": page.get("title", ""),
+                    "description": _first_text(jsondata.get("description"))
+                    or _first_text(jsondata.get("label")),
+                    "body": (slots.get("main") or {}).get("*") or "",
+                }
+        self._wiki_skills = skills
+        return skills
+
+    async def list_wiki_skills(self, query=""):
+        """Name, description and title of each wiki skill, optionally filtered."""
+        skills = await self._wiki_skill_pages()
+        needle = (query or "").strip().lower()
+        return [
+            {"name": s["name"], "description": s["description"], "title": s["title"]}
+            for s in skills.values()
+            if not needle
+            or needle in s["name"].lower()
+            or needle in s["description"].lower()
+        ]
+
+    async def load_wiki_skill(self, name):
+        """The body of a wiki skill, or None if this wiki has no such skill."""
+        skills = await self._wiki_skill_pages()
+        skill = skills.get(name)
+        return skill["body"] if skill else None
+
+    async def save_wiki_skill(self, name, description, instructions, title=None):
+        """Create or update a Category:Skill page, through the usual write path.
+
+        Routed through `edit_page` rather than a new browser tool so it inherits
+        everything that already guards a write: the confirmation dialog, the action gate,
+        and the fact that it happens in the user's browser under their rights.
+        """
+        existing = (await self._wiki_skill_pages()).get(name)
+        if title is None:
+            title = existing["title"] if existing else f"Item:OSW{uuid.uuid4().hex}"
+        if title.startswith("Item:OSW"):
+            self.minted_ids.add(title.split("OSW", 1)[1].lower())
+
+        jsondata = {
+            "type": [SKILL_CATEGORY],
+            "skill_name": name,
+            "label": [{"text": name, "lang": "en"}],
+            "description": [{"text": description, "lang": "en"}],
+        }
+        osw_id = osw_id_of(title)
+        if osw_id is not None:
+            jsondata["uuid"] = uuid_from_osw_id(osw_id)
+
+        result = await self.call_client_side_tool(
+            "edit_page",
+            [title, {"jsondata": jsondata, "main": instructions}, f"Skill: {name}"],
+        )
+        # The cache would otherwise hide the skill that was just written for the rest of
+        # the conversation, which is exactly when it is most likely to be used.
+        await self._wiki_skill_pages(refresh=True)
+        return {"ok": True, "title": title, "name": name, "result": result}
 
     async def _page_exists(self, title):
         """Does this wiki page exist? Used before trusting a model-chosen id."""
