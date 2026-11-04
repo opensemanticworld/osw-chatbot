@@ -980,3 +980,45 @@ def test_document_text_is_rendered_with_page_numbers(session):
     tool = {t.name: t for t in session.tools}["get_file_content"]
     assert set(tool.args) == {"file_title", "query"}
     assert "url that renders exactly that page" in tool.description
+
+
+def test_one_huge_tool_result_cannot_fail_the_turn():
+    """A 2M-token prompt is a 400 from the vendor, i.e. no answer at all.
+
+    The scratchpad is never trimmed, so the cap has to be on the way out of the
+    tool. Truncating degrades the answer instead of losing it.
+    """
+    import asyncio
+
+    from osw_chatbot.config import MAX_TOOL_RESULT_CHARS
+    from osw_chatbot.toolcalling.agent import _bounded, _truncate
+
+    assert _truncate("short") == "short"
+    big = _truncate("x" * (MAX_TOOL_RESULT_CHARS + 5000))
+    assert len(big) < MAX_TOOL_RESULT_CHARS + 500
+    assert "truncated" in big
+
+    class FakeTool:
+        def __init__(self, result):
+            async def coroutine(*a, **k):
+                return result
+
+            self.coroutine = coroutine
+
+    huge = FakeTool("y" * (MAX_TOOL_RESULT_CHARS * 3))
+    _bounded(huge)
+    out = asyncio.run(huge.coroutine())
+    assert len(out) < MAX_TOOL_RESULT_CHARS + 500
+    assert "truncated" in out
+
+    # Structured results are left alone: slicing a dict repr or a base64 data
+    # url would corrupt it rather than shorten it.
+    structured = FakeTool({"pages": [1, 2, 3]})
+    _bounded(structured)
+    assert asyncio.run(structured.coroutine()) == {"pages": [1, 2, 3]}
+
+    # A tool with no coroutine must survive wrapping untouched.
+    class SyncOnly:
+        coroutine = None
+
+    assert _bounded(SyncOnly()) is not None

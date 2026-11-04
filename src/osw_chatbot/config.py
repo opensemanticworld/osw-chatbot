@@ -73,6 +73,22 @@ HISTORY_MAX_BYTES = int(os.getenv("HISTORY_MAX_BYTES", "100000"))
 # Truncate a single message before storing / replaying it.
 HISTORY_MAX_CHARS_PER_MESSAGE = int(os.getenv("HISTORY_MAX_CHARS_PER_MESSAGE", "8000"))
 
+# Largest contribution a single tool observation, or one attachment's extracted
+# text, may make to the prompt.
+#
+# chat_history is trimmed on every turn by the three limits above, but the agent
+# scratchpad is not trimmed at all: whatever a tool returns goes to the model
+# whole, inside the same request. One oversized result therefore does not degrade
+# the answer, it fails the turn - the vendor rejects the request outright with
+# "prompt is too long: 2006895 tokens > 1000000 maximum", which surfaces as a
+# traceback rather than as an answer. Attachments have the same hole: _content
+# appends att['text'] unbounded, and ATTACHMENT_MAX_BYTES allows 20 MB.
+#
+# 120k characters is roughly 30k tokens, so several large observations still fit
+# in a 1M window alongside the history and the system prompt. Raise it only
+# together with the model's context limit.
+MAX_TOOL_RESULT_CHARS = int(os.getenv("MAX_TOOL_RESULT_CHARS", "120000"))
+
 ## Authentication
 
 # Shared with the MediaWiki Chatbot extension ($wgChatbotSecret). When empty,

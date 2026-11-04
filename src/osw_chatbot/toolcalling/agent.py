@@ -17,6 +17,7 @@ from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from osw_chatbot.config import (
     CLIENT_TOOL_TIMEOUT,
     MAX_INLINE_FILE_BYTES,
+    MAX_TOOL_RESULT_CHARS,
     CONFIRM_TIMEOUT,
     PARENT_ORIGINS,
 )
@@ -135,6 +136,37 @@ def as_text(output) -> str:
                 parts.append(str(block))
         return "".join(parts)
     return "" if output is None else str(output)
+
+
+def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
+    """Cap one contribution to the prompt, saying so rather than silently cutting."""
+    if len(text) <= limit:
+        return text
+    return (
+        f"{text[:limit]}\n\n[truncated: {len(text)} characters, showing {limit}. "
+        "Narrow the query and call again for the part you need.]"
+    )
+
+
+def _bounded(tool):
+    """Stop one oversized observation from failing the whole turn.
+
+    The scratchpad is not trimmed - see MAX_TOOL_RESULT_CHARS in config. Only
+    string results are capped: the tools that can be huge return text, while the
+    structured ones are small, and blindly slicing a base64 data url or a dict
+    repr would corrupt it instead of shortening it.
+    """
+    original = getattr(tool, "coroutine", None)
+    if original is None:
+        return tool
+
+    async def bounded(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        return _truncate(result) if isinstance(result, str) else result
+
+    bounded.__name__ = getattr(original, "__name__", "bounded")
+    tool.coroutine = bounded
+    return tool
 
 
 def _tool_error_observation(error: Exception) -> str:
@@ -329,6 +361,7 @@ class ChatSession:
         for tool in self.tools:
             tool.handle_tool_error = _tool_error_observation
             tool.handle_validation_error = _tool_input_observation
+            _bounded(tool)
         self.agent_executor = AgentExecutor(
             agent=create_tool_calling_agent(
                 llm, self.tools, build_prompt(self._prompt_extra())
@@ -930,6 +963,7 @@ class ChatSession:
         for tool in tools:
             tool.handle_tool_error = _tool_error_observation
             tool.handle_validation_error = _tool_input_observation
+            _bounded(tool)
         return tools
 
     async def _resolve_references(self, data, schema):
@@ -1140,7 +1174,9 @@ class ChatSession:
                     {"type": "image_url", "image_url": {"url": att["preview"]}}
                 )
             elif att.get("text"):
-                notes.append(f"Content of {name}:\n{att['text']}")
+                # ATTACHMENT_MAX_BYTES allows 20 MB, and this went into the prompt
+                # whole - the other half of the same hole the tool results had.
+                notes.append(f"Content of {name}:\n{_truncate(att['text'])}")
         return [{"type": "text", "text": "\n".join([prompt, *notes])}, *blocks]
 
     async def invoke(self, prompt, attachments=None, callbacks=None):
