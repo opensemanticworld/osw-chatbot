@@ -83,6 +83,32 @@ def verify_token(token, secret=None, now=None):
     return payload.get("u") if payload else None
 
 
+def token_wiki_url(token, secret=None, now=None):
+    """The origin of the wiki that signed `token`, or None.
+
+    The model is told to write absolute links - the chat renders inside an
+    iframe on *this* host, so a relative href would resolve against the chatbot
+    rather than the wiki. That made the wiki's own origin a fact it needs for
+    almost every answer, and the only source was the client-asserted
+    `where_am_i` tool, which it is merely instructed to call. One backend now
+    serves several deployments, so a guess is wrong more often than right.
+
+    Signed, hence trustworthy, and available before the first tool call. Old
+    wikis do not send it; `where_am_i` stays the fallback.
+    """
+    payload = decode_token(token, secret, now) or {}
+    url = payload.get("s")
+    if not isinstance(url, str):
+        return None
+    url = url.strip().rstrip("/")
+    # Only an http(s) origin is usable in a link, and the claim is echoed into
+    # the system prompt - so refuse anything that is not one rather than
+    # inviting a malformed or hostile value in.
+    if not url.startswith(("http://", "https://")):
+        return None
+    return url
+
+
 def token_actions(token, secret=None, now=None):
     """The action lists the wiki signed into `token`.
 

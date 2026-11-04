@@ -13,7 +13,7 @@ if not env_loaded:
 
 from langchain_core.messages import HumanMessage
 
-from osw_chatbot.auth import token_actions, verify_token
+from osw_chatbot.auth import token_actions, token_wiki_url, verify_token
 from osw_chatbot.chat import history as hist
 from osw_chatbot.chat.attachment import AttachmentWidget
 from osw_chatbot.chat.client_store import ClientStoreWidget
@@ -93,6 +93,10 @@ def build_app():
         user=current_user(),
         actions=actions,
         confirm_actions=confirm_actions,
+        # Signed by the wiki, so the model is told which host it is serving
+        # instead of inferring one. None on a wiki too old to send the claim,
+        # which leaves the previous where_am_i behaviour in place.
+        wiki_url=token_wiki_url(current_token()),
     )
     store = ClientStoreWidget(
         store_key="history",

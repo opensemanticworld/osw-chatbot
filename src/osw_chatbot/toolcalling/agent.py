@@ -277,8 +277,13 @@ class ChatSession:
         user=None,
         actions=None,
         confirm_actions=None,
+        wiki_url=None,
     ):
         self.user = user  # verified wiki username, or None when unauthenticated
+        # Origin of the wiki that signed the token, when it sent one. Goes into
+        # the system prompt so the model never has to guess it; see
+        # auth.token_wiki_url for why guessing was the previous behaviour.
+        self.wiki_url = wiki_url
         # Actions the wiki signed into the token. Only the ones that run *here*
         # are enforced here - the write actions are gated in the browser, which
         # is where the user's MediaWiki session is.
@@ -326,12 +331,34 @@ class ChatSession:
             tool.handle_validation_error = _tool_input_observation
         self.agent_executor = AgentExecutor(
             agent=create_tool_calling_agent(
-                llm, self.tools, build_prompt(skill_index(self.skills))
+                llm, self.tools, build_prompt(self._prompt_extra())
             ),
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
         )
+
+    def _prompt_extra(self) -> str:
+        """Per-session additions to the system prompt.
+
+        The wiki origin goes first and in imperative form. SYSTEM_TEXT already
+        forbids guessing the domain, but that rule points at a tool the model
+        has to remember to call; stating the answer outright removes the step
+        it was skipping.
+        """
+        parts = []
+        if self.wiki_url:
+            parts.append(
+                f"This conversation is hosted by the wiki at {self.wiki_url} - "
+                "use exactly that origin for every link you write, and do not "
+                "call 'where_am_i' merely to learn the domain. Any other host "
+                "in a link is wrong, including one you remember from elsewhere: "
+                "you have no memory of previous conversations."
+            )
+        index = skill_index(self.skills)
+        if index:
+            parts.append(index)
+        return "\n\n".join(parts)
 
     def _gated_websearch_tool(self, tool):
         """Ask the browser before searching, when the wiki wants that.

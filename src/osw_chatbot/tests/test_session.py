@@ -279,6 +279,46 @@ def test_token_carries_the_action_lists():
     assert token_actions("garbage") == (["websearch"], [])
 
 
+def test_token_carries_the_wiki_origin():
+    from osw_chatbot.auth import token_wiki_url
+
+    now = int(time.time())
+
+    def mint(server):
+        return _mint({"u": "Alice", "iat": now, "exp": now + 600, "s": server})
+
+    assert token_wiki_url(mint("https://batterie-digital.fraunhofer.de")) == (
+        "https://batterie-digital.fraunhofer.de"
+    )
+    # a trailing slash would double up when a link is built from it
+    assert token_wiki_url(mint("https://wiki.example.org/")) == "https://wiki.example.org"
+    # the claim is echoed into the system prompt, so anything that is not an
+    # http(s) origin is dropped rather than passed through
+    for bad in ("javascript:alert(1)", "wiki.example.org", "", 42, None):
+        assert token_wiki_url(mint(bad)) is None
+    # a wiki too old to send the claim leaves where_am_i as the fallback
+    assert token_wiki_url(_mint({"u": "Alice", "iat": now, "exp": now + 600})) is None
+    assert token_wiki_url("garbage") is None
+
+
+def test_the_wiki_origin_reaches_the_system_prompt():
+    """The whole point of the claim: the model is told, not left to guess."""
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession(wiki_url="https://batterie-digital.fraunhofer.de")
+    try:
+        extra = session._prompt_extra()
+        assert "https://batterie-digital.fraunhofer.de" in extra
+    finally:
+        session.close()
+
+    bare = ChatSession()
+    try:
+        assert "fraunhofer" not in bare._prompt_extra()
+    finally:
+        bare.close()
+
+
 def test_skills_are_indexed_and_loadable(session):
     from osw_chatbot.skills import skill_index
 
