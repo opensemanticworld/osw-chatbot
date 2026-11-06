@@ -383,6 +383,9 @@ class ChatSession:
         # SKILL_DEFAULT_DATA with references this wiki lacks removed; see
         # _usable_skill_defaults. None until the first skill write probes for them.
         self._skill_defaults: Optional[Dict[str, Any]] = None
+        # category -> its superclass chain. The hierarchy does not move during a
+        # conversation, and the gate would otherwise resolve it on every write.
+        self._superclass_cache: Dict[str, List[str]] = {}
         # Wiki-authored skills, fetched through the browser the first time something
         # asks. None means 'not looked yet'; {} means 'looked, this wiki has none'.
         self._wiki_skills: Optional[Dict[str, Dict[str, str]]] = None
@@ -859,6 +862,20 @@ class ChatSession:
                     "'slots' must be an object mapping slot name to content, "
                     f"got {type(slots).__name__}"
                 )
+            # Instantiating a category means following that category's conventions, and
+            # the wiki is where they are written down. Checked before the write, not
+            # after, because the point is to shape what gets written.
+            for category in (slots.get("jsondata") or {}).get("type") or []:
+                if not isinstance(category, str):
+                    continue
+                for required in await session.skills_for_category(category):
+                    if required not in session.loaded_skills:
+                        raise ClientToolError(
+                            f"'{category}' has a skill on this wiki that has to be read "
+                            f"first: call load_skill('{required}'), follow it, then make "
+                            "this edit again"
+                        )
+
             managed = sorted(MANAGED_SLOTS.intersection(slots))
             if managed:
                 # A prompt rule was not enough - the model writes these anyway, and a
@@ -1172,9 +1189,90 @@ class ChatSession:
                     "description": _first_text(jsondata.get("description"))
                     or _first_text(jsondata.get("label")),
                     "body": (slots.get("main") or {}).get("*") or "",
+                    # Target concepts this skill applies to - Categories, mostly. Read
+                    # straight off the page rather than queried: none of the skill
+                    # category's fields are exported as SMW properties, so there is
+                    # nothing to ask for, and the jsondata is already parsed here.
+                    "related_to": [
+                        r for r in (jsondata.get("related_to") or []) if isinstance(r, str)
+                    ],
+                    # Prerequisite chain. Real content already uses it: "OSW Python
+                    # Package" requires "JSON-SCHEMA Tutorial".
+                    "required_predecessors": [
+                        r
+                        for r in (jsondata.get("required_predecessor") or [])
+                        if isinstance(r, str)
+                    ],
                 }
         self._wiki_skills = skills
         return skills
+
+    async def _superclasses(self, category):
+        """`category` and everything it is a subclass of, nearest first.
+
+        Cached per session: a gate that resolved this on every write would cost a round
+        trip per edit, and the hierarchy does not move during a conversation.
+        """
+        if category in self._superclass_cache:
+            return self._superclass_cache[category]
+
+        chain, seen, current = [], set(), category
+        while current and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            try:
+                data = await self.call_client_side_tool(
+                    "get_page_content", [[current], False]
+                )
+            except ClientToolError:
+                break
+            pages = ((data or {}).get("query", {}) or {}).get("pages") or {}
+            parent = None
+            for page in pages.values():
+                slots = (page.get("revisions") or [{}])[0].get("slots") or {}
+                raw = (slots.get("jsondata") or {}).get("*")
+                if not raw:
+                    continue
+                try:
+                    parents = json.loads(raw).get("subclass_of") or []
+                except ValueError:
+                    continue
+                parent = next((p for p in parents if isinstance(p, str)), None)
+            current = parent
+        self._superclass_cache[category] = chain
+        return chain
+
+    async def skills_for_category(self, category):
+        """Skill names that must be loaded before instantiating `category`.
+
+        A skill on a supercategory covers its subcategories - a convention for "Device"
+        applies to every kind of device - so the whole chain is considered. Prerequisites
+        are pulled in transitively, nearest requirement last so the chain reads in the
+        order it should be followed.
+        """
+        skills = await self._wiki_skill_pages()
+        by_title = {s["title"]: s for s in skills.values() if s.get("title")}
+        chain = await self._superclasses(category)
+
+        matched, seen = [], set()
+
+        def pull(skill):
+            # Depth first through required_predecessor, guarding against a cycle: the
+            # property is authored by hand and nothing on the wiki prevents one.
+            if skill["name"] in seen:
+                return
+            seen.add(skill["name"])
+            for predecessor in skill.get("required_predecessors") or []:
+                earlier = by_title.get(predecessor)
+                if earlier is not None:
+                    pull(earlier)
+            matched.append(skill["name"])
+
+        for target in chain:
+            for skill in skills.values():
+                if target in (skill.get("related_to") or []):
+                    pull(skill)
+        return matched
 
     async def list_wiki_skills(self, query=""):
         """Name, description and title of each wiki skill, optionally filtered."""

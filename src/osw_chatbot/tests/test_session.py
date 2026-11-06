@@ -1222,3 +1222,68 @@ def test_discover_skills_falls_back_to_the_bundled_ones():
         assert [s["name"] for s in narrowed] == ["osl-page-editing"]
     finally:
         session.close()
+
+
+def test_a_category_skill_gates_instantiation_and_pulls_prerequisites():
+    """A skill on a supercategory covers its subcategories; prerequisites come first."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "device-conventions": {
+                "name": "device-conventions",
+                "title": "Item:OSWdev",
+                "description": "how devices are written here",
+                "body": "...",
+                "related_to": ["Category:Device"],
+                "required_predecessors": ["Item:OSWbase"],
+            },
+            "wiki-basics": {
+                "name": "wiki-basics",
+                "title": "Item:OSWbase",
+                "description": "read this first",
+                "body": "...",
+                "related_to": [],
+                "required_predecessors": [],
+            },
+        }
+        # Sensor is a Device, so the Device skill applies to it.
+        session._superclass_cache["Category:Sensor"] = [
+            "Category:Sensor",
+            "Category:Device",
+        ]
+        needed = asyncio.run(session.skills_for_category("Category:Sensor"))
+        assert needed == ["wiki-basics", "device-conventions"], "prerequisite first"
+
+        # A category nobody wrote a skill for is not gated.
+        session._superclass_cache["Category:Unrelated"] = ["Category:Unrelated"]
+        assert asyncio.run(session.skills_for_category("Category:Unrelated")) == []
+    finally:
+        session.close()
+
+
+def test_a_prerequisite_cycle_does_not_hang_the_gate():
+    """required_predecessor is authored by hand and nothing on the wiki forbids a loop."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "a": {
+                "name": "a", "title": "Item:A", "description": "", "body": "",
+                "related_to": ["Category:X"], "required_predecessors": ["Item:B"],
+            },
+            "b": {
+                "name": "b", "title": "Item:B", "description": "", "body": "",
+                "related_to": [], "required_predecessors": ["Item:A"],
+            },
+        }
+        session._superclass_cache["Category:X"] = ["Category:X"]
+        assert sorted(asyncio.run(session.skills_for_category("Category:X"))) == ["a", "b"]
+    finally:
+        session.close()
