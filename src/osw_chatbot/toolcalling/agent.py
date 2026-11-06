@@ -351,6 +351,12 @@ class ChatSession:
 
         self.skills = load_skills()
         self.loaded_skills: Set[str] = set()
+        # title -> slots this session successfully wrote. The model re-reads pages it has
+        # just written because the history carries no record of the write; serving that
+        # read from here costs nothing and answers it honestly. Only successful writes are
+        # recorded, and `include_html` still goes to the wiki, so a confirming read that
+        # actually needs the rendered page is never short-circuited.
+        self.written_pages: Dict[str, Any] = {}
         # Wiki-authored skills, fetched through the browser the first time something
         # asks. None means 'not looked yet'; {} means 'looked, this wiki has none'.
         self._wiki_skills: Optional[Dict[str, Dict[str, str]]] = None
@@ -629,6 +635,24 @@ class ChatSession:
             If include_html is true the html content of the page also returned. This is more expensive but may also contain aggregated content from other pages,
             e.g. if the page contains a overview list.
             """
+            # Pages written in this session are answered from what was written. The model
+            # re-reads them because the transcript carries no record of its own writes;
+            # fetching again costs a round trip to say what we already know. Anything
+            # needing the *rendered* page still goes to the wiki.
+            if not include_html:
+                known = [t for t in titles if t in session.written_pages]
+                if known and len(known) == len(titles):
+                    return {
+                        t: {
+                            "slots": session.written_pages[t],
+                            "note": (
+                                "written by you earlier in this session; the wiki was not "
+                                "queried again. Pass include_html=true to re-read it."
+                            ),
+                        }
+                        for t in titles
+                    }
+
             return await session.call_client_side_tool(
                 "get_page_content", [titles, include_html]
             )
@@ -834,7 +858,13 @@ class ChatSession:
                 # The uuid in the data and the id in the title are the same
                 # thing; a mismatch leaves the entity unfindable.
                 slots["jsondata"]["uuid"] = uuid_from_osw_id(osw_id)
-            return await session.call_client_side_tool("edit_page", [title, slots, summary])
+            result = await session.call_client_side_tool(
+                "edit_page", [title, slots, summary]
+            )
+            # Only on success, and merged rather than replaced: edit_page changes just the
+            # slots it is given, so a later read must still see the ones written earlier.
+            session.written_pages.setdefault(title, {}).update(slots)
+            return result
 
         @langchain_core.tools.tool
         async def delete_page(title: str, reason: str = "") -> dict:
@@ -894,6 +924,15 @@ class ChatSession:
             """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not.
 
             Skills that ship with the assistant are listed in the system prompt. This wiki may also hold its own, written by its editors - use 'discover_skills' to find those, then load them by name here too."""
+
+            if name in session.loaded_skills:
+                # Returning the body again would spend the whole skill a second time for
+                # nothing. The instructions are already upstream in this conversation.
+                return (
+                    f"'{name}' is already loaded earlier in this session - its "
+                    "instructions are above and still apply. Follow them; do not ask for "
+                    "it again."
+                )
 
             skill = session.skills.get(name)
             if skill is not None:

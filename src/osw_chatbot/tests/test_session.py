@@ -1104,3 +1104,39 @@ def test_writing_header_or_footer_is_refused():
             assert "header_template" in message and "main" in message
     finally:
         session.close()
+
+
+def test_a_loaded_skill_is_not_sent_twice():
+    """The body is already upstream in the conversation; resending spends it again."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        load = next(t for t in session.tools if t.name == "load_skill")
+        name = next(iter(session.skills))
+        first = asyncio.run(load.coroutine(name=name))
+        second = asyncio.run(load.coroutine(name=name))
+        assert len(first) > 200, "the first call must return the real body"
+        assert "already loaded" in second
+        assert len(second) < len(first)
+    finally:
+        session.close()
+
+
+def test_a_page_written_this_session_is_not_reread():
+    """The transcript carries no record of the write, so the model asks again."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session.written_pages["Item:OSW1"] = {"main": "hello"}
+        read = next(t for t in session.tools if t.name == "get_page_content")
+        out = asyncio.run(read.coroutine(titles=["Item:OSW1"], include_html=False))
+        assert out["Item:OSW1"]["slots"] == {"main": "hello"}
+        assert "session" in out["Item:OSW1"]["note"]
+    finally:
+        session.close()
