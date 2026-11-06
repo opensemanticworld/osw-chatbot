@@ -80,6 +80,39 @@ Configuration lives in `.env` under `LLM_PROXY_*`; the upstream defaults to
 `OPENAI_BASE_URL` / `OPENAI_API_KEY`, so a deployment that already set those needs
 nothing more than `LLM_PROXY_SERVER`.
 
+## Skills
+
+A skill is an ordinary wiki page carrying the **AI Skill** keyword
+(`Item:OSW1dd1c2ee927343ca9097a45a0af21678`). The keyword is what makes a page a skill,
+not its category - so a `Tutorial`, an `LLM-Skill` or a plain `Article` can all be one
+without being moved. Discovery is an SMW ask over `[[HasKeyword::…]]`; when a wiki holds
+none, the markdown skills bundled in `src/osw_chatbot/skills/` are used instead.
+
+**Install `world.opensemantic.base` and `world.opensemantic.meta.docs` on the wiki.**
+They supply the `Article` / `Keyword` / `part_of` vocabulary the defaults below assume.
+Without them `save_skill` refuses rather than typing a page against a category the wiki
+does not have, and any default naming a missing page is dropped instead of written as a
+dangling reference.
+
+| setting | default |
+| --- | --- |
+| `SKILL_CATEGORY` | `Category:OSW92cc6b1a2e6b4bb7bad470dfdcfdaf26` (Article) |
+| `SKILL_DISCOVERY_QUERY` | `[[HasKeyword::Item:OSW1dd1c2ee927343ca9097a45a0af21678]]` |
+| `SKILL_DEFAULT_DATA` | the keyword, plus `part_of` "OpenSemanticLab for developers" |
+
+The JupyterLite sandbox has its own discovery setting with the same default, delivered
+through `action=jupyterliteconfig`. It **extends** Jupyternaut's built-in skills rather
+than replacing them; here, wiki skills replace the bundled markdown.
+
+A skill may name the categories it covers in `related_to`. Writing an instance of such a
+category then requires loading that skill first, and a skill on a supercategory covers
+its subcategories. `required_predecessor` chains prerequisites, followed transitively.
+
+> **TODO: gate discovery on approved revisions.** Skill pages are content the model is
+> instructed to obey, and anyone who can edit the wiki can edit them. `ApprovedRevs` is
+> already in the wiki image, so an optional "approved revisions only" mode would close
+> the gap between "a user may edit this page" and "a user may steer the assistant".
+
 ## Development
 
 ```bash
