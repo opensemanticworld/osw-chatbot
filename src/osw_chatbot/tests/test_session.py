@@ -1201,3 +1201,24 @@ def test_a_mistyped_osw_id_is_caught_before_it_becomes_a_second_page():
         assert good.upper() in str(caught.value)
     finally:
         session.close()
+
+
+def test_discover_skills_falls_back_to_the_bundled_ones():
+    """An empty list reads as "this wiki has no conventions", which is not the same."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        # No bridge, so the wiki lookup yields nothing - the fresh-wiki case.
+        session._wiki_skills = {}
+        discover = next(t for t in session.tools if t.name == "discover_skills")
+        found = asyncio.run(discover.coroutine(query=""))
+        assert {s["name"] for s in found} == set(session.skills)
+        assert all(s["description"] for s in found)
+
+        narrowed = asyncio.run(discover.coroutine(query="page-editing"))
+        assert [s["name"] for s in narrowed] == ["osl-page-editing"]
+    finally:
+        session.close()

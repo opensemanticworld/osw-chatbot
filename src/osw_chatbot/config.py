@@ -4,6 +4,7 @@ Imported by the app modules so that env parsing (and its defaults) live in one
 file instead of being scattered over ``os.environ[...]`` lookups.
 """
 
+import json
 import os
 
 
@@ -113,3 +114,45 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 # session simply fails - "prompt is too long: 2006895 tokens > 1000000 maximum" is a 400
 # from the vendor, i.e. no answer rather than a worse one.
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", str(600_000)))
+
+## Skills
+
+# Skills are ordinary wiki pages, found by configuration rather than by a category we
+# invented. Everything here is a default a deployment can retarget.
+
+#: Category a skill page must be an instance of. Article is deliberately broad - Tutorial
+#: and LLM-Skill both sit under it - because the keyword below is what actually makes a
+#: page a skill. `save_skill` refuses to write if this is missing from the target wiki.
+SKILL_CATEGORY = os.getenv(
+    "SKILL_CATEGORY", "Category:OSW92cc6b1a2e6b4bb7bad470dfdcfdaf26"
+)
+
+#: The "AI Skill" keyword, an instance of Category:Keyword.
+AI_SKILL_KEYWORD = os.getenv(
+    "AI_SKILL_KEYWORD", "Item:OSW1dd1c2ee927343ca9097a45a0af21678"
+)
+
+#: Merged into the jsondata of a saved skill, filling only what the assistant did not
+#: supply - it may add further keywords or further part_of targets. Any OSW-page id in
+#: here that does not exist on the target wiki is dropped before the merge, so a wiki
+#: without the keyword still gets a valid write instead of a dangling reference.
+#: `part_of` places skills under "OpenSemanticLab for developers", itself part of the
+#: OpenSemanticLab Manual.
+SKILL_DEFAULT_DATA = json.loads(
+    os.getenv(
+        "SKILL_DEFAULT_DATA",
+        json.dumps(
+            {
+                "keywords": [AI_SKILL_KEYWORD],
+                "part_of": ["Item:OSWe0cbdc9c1e0e4a53b21bd83e6c6d99ad"],
+            }
+        ),
+    )
+)
+
+#: How skills are found. The sandbox agent has its own setting sharing this default, so a
+#: deployment can narrow one without disturbing the other; keep the default here so the
+#: two cannot drift.
+SKILL_DISCOVERY_QUERY = os.getenv(
+    "SKILL_DISCOVERY_QUERY", f"[[HasKeyword::{AI_SKILL_KEYWORD}]]"
+)

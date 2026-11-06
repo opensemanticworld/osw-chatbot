@@ -18,6 +18,9 @@ from osw_chatbot.config import (
     CLIENT_TOOL_TIMEOUT,
     MAX_INLINE_FILE_BYTES,
     MAX_PROMPT_CHARS,
+    SKILL_CATEGORY,
+    SKILL_DEFAULT_DATA,
+    SKILL_DISCOVERY_QUERY,
     MAX_TOOL_RESULT_CHARS,
     CONFIRM_TIMEOUT,
     PARENT_ORIGINS,
@@ -100,7 +103,7 @@ def uuid_from_osw_id(osw_id: str) -> str:
 
 # Category:Skill - instances are assistant skills authored on the wiki. A subclass of
 # Category:Tutorial, so querying Tutorial would return fifty pages that are not skills.
-SKILL_CATEGORY = "Category:OSWc4358938e1f54d8da084c028dfb8c22f"
+
 
 #: Slots the wiki owns. 'header' and 'footer' always carry the default entity invokes and
 #: nothing else; writing them replaces the rendering machinery on every page that uses
@@ -377,6 +380,9 @@ class ChatSession:
         # recorded, and `include_html` still goes to the wiki, so a confirming read that
         # actually needs the rendered page is never short-circuited.
         self.written_pages: Dict[str, Any] = {}
+        # SKILL_DEFAULT_DATA with references this wiki lacks removed; see
+        # _usable_skill_defaults. None until the first skill write probes for them.
+        self._skill_defaults: Optional[Dict[str, Any]] = None
         # Wiki-authored skills, fetched through the browser the first time something
         # asks. None means 'not looked yet'; {} means 'looked, this wiki has none'.
         self._wiki_skills: Optional[Dict[str, Dict[str, str]]] = None
@@ -990,11 +996,24 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def discover_skills(query: str = "") -> List[Dict[str, str]]:
-            """Lists the skills this wiki holds - instances of Category:Skill, written by its editors rather than shipped with the assistant. Returns a list of {name, description, title}; pass a name to 'load_skill' to read one.
+            """Lists the skills available on this wiki, written by its editors. Returns a list of {name, description, title}; pass a name to 'load_skill' to read one.
 
             Use it when a task looks wiki-specific and nothing in the system prompt covers it: local conventions, a house style for a category, a procedure this site follows. 'query' narrows by substring over names and descriptions; leave it empty to see everything."""
 
-            return await session.list_wiki_skills(query)
+            found = await session.list_wiki_skills(query)
+            if found:
+                return found
+
+            # A wiki that holds no skills yet should still get the ones shipped here,
+            # rather than an empty list that reads as "this wiki has no conventions".
+            needle = (query or "").strip().lower()
+            return [
+                {"name": s.name, "description": s.description, "title": ""}
+                for s in session.skills.values()
+                if not needle
+                or needle in s.name.lower()
+                or needle in s.description.lower()
+            ]
 
         @langchain_core.tools.tool
         async def save_skill(
@@ -1112,7 +1131,7 @@ class ChatSession:
 
         try:
             listing = await self.call_client_side_tool(
-                "smw_ask_query", [f"[[{SKILL_CATEGORY}]]|limit=500"]
+                "smw_ask_query", [f"{SKILL_DISCOVERY_QUERY}|limit=500"]
             )
         except ClientToolError:
             # No skills is a perfectly good answer; a failed lookup must not end the turn.
@@ -1188,12 +1207,32 @@ class ChatSession:
         if title.startswith("Item:OSW"):
             self.minted_ids.add(title.split("OSW", 1)[1].lower())
 
+        if not await self._page_exists(SKILL_CATEGORY):
+            # Writing the skill anyway would type it against a category this wiki does not
+            # have: the page renders, nothing finds it, and nobody notices until someone
+            # asks why the assistant has no skills.
+            raise ClientToolError(
+                f"Category for skills not installed: {SKILL_CATEGORY} does not exist on "
+                "this wiki. Install the opensemantic base vocabulary, or point "
+                "SKILL_CATEGORY at the category this wiki uses."
+            )
+
         jsondata = {
             "type": [SKILL_CATEGORY],
             "skill_name": name,
             "label": [{"text": name, "lang": "en"}],
             "description": [{"text": description, "lang": "en"}],
         }
+        # Defaults fill what the caller did not supply and never overwrite it - the
+        # assistant may add its own keywords or part_of targets, and both lists are unioned
+        # rather than replaced.
+        for key, value in (await self._usable_skill_defaults()).items():
+            if isinstance(value, list):
+                existing = jsondata.get(key) or []
+                jsondata[key] = existing + [v for v in value if v not in existing]
+            else:
+                jsondata.setdefault(key, value)
+
         osw_id = osw_id_of(title)
         if osw_id is not None:
             jsondata["uuid"] = uuid_from_osw_id(osw_id)
@@ -1206,6 +1245,33 @@ class ChatSession:
         # the conversation, which is exactly when it is most likely to be used.
         await self._wiki_skill_pages(refresh=True)
         return {"ok": True, "title": title, "name": name, "result": result}
+
+    async def _usable_skill_defaults(self):
+        """SKILL_DEFAULT_DATA with references this wiki does not have removed.
+
+        The defaults name pages - the AI Skill keyword, the developers article - that exist
+        on an OSW wiki with the standard vocabulary installed and nowhere else. Writing
+        them regardless would leave dangling references that queries silently skip, so each
+        is probed once and dropped if absent. Cached: this runs on every skill write.
+        """
+        if self._skill_defaults is not None:
+            return self._skill_defaults
+
+        usable = {}
+        for key, value in SKILL_DEFAULT_DATA.items():
+            if isinstance(value, list):
+                kept = []
+                for ref in value:
+                    if not isinstance(ref, str) or osw_id_of(ref) is None:
+                        kept.append(ref)  # not a page reference, nothing to check
+                    elif await self._page_exists(ref):
+                        kept.append(ref)
+                if kept:
+                    usable[key] = kept
+            else:
+                usable[key] = value
+        self._skill_defaults = usable
+        return usable
 
     async def _page_exists(self, title):
         """Does this wiki page exist? Used before trusting a model-chosen id."""
