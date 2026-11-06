@@ -1321,23 +1321,21 @@ class ChatSession:
             "label": [{"text": name, "lang": "en"}],
             "description": [{"text": description, "lang": "en"}],
         }
-        # Defaults fill what the caller did not supply and never overwrite it - the
-        # assistant may add its own keywords or part_of targets, and both lists are unioned
-        # rather than replaced.
-        for key, value in (await self._usable_skill_defaults()).items():
-            if isinstance(value, list):
-                existing = jsondata.get(key) or []
-                jsondata[key] = existing + [v for v in value if v not in existing]
-            else:
-                jsondata.setdefault(key, value)
-
         osw_id = osw_id_of(title)
         if osw_id is not None:
             jsondata["uuid"] = uuid_from_osw_id(osw_id)
 
+        # The defaults go to the browser rather than being merged here: mwjson.util
+        # .mergeDeep is the wiki's own merge - arrays concatenated and uniqued - and
+        # reimplementing it in python would be a second copy to keep in step.
         result = await self.call_client_side_tool(
             "edit_page",
-            [title, {"jsondata": jsondata, "main": instructions}, f"Skill: {name}"],
+            [
+                title,
+                {"jsondata": jsondata, "main": instructions},
+                f"Skill: {name}",
+                await self._usable_skill_defaults(),
+            ],
         )
         # The cache would otherwise hide the skill that was just written for the rest of
         # the conversation, which is exactly when it is most likely to be used.
