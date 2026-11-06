@@ -103,22 +103,28 @@ conditions it could not consider.
 
 OpenSemanticLab pages keep structured data in **slots** next to the wikitext.
 
-**Which slots a page has**
+**Which slot to write, by what the content is for**
 
-| Page | Slots |
-|---|---|
-| `Item:`, `Property:` | `jsondata` (object), empty `main`, `header` = `{{#invoke:Entity\|header}}`, `footer` = `{{#invoke:Entity\|footer}}` |
-| `Category:` | the same, plus `jsonschema` (object), and `schema_template` where used |
-| `JsonSchema:` (legacy) | the schema lives in `main`, as JSON |
+| the content is… | slot | format |
+|---|---|---|
+| this page's own text | `main` | wikitext |
+| shown on **every instance** of a category, above the page | `header_template` | wikitext |
+| …below the page | `footer_template` | wikitext |
+| structured data | `jsondata` | JSON object |
+| a category's schema | `jsonschema` | JSON object |
 
-`edit_page` sets the header/footer invokes for you when you write `jsondata`. Without them an
-entity renders blank.
+> **Never write `header` or `footer`.** They always carry the default entity invokes
+> (`{{#invoke:Entity|header}}` / `…|footer}}`) and nothing else - `edit_page` sets them for
+> you when you write `jsondata`, and overwriting them makes the entity render blank. The
+> tool rejects the call outright if you include them. Content that belongs "at the top of
+> the page" goes in `header_template`, which applies to every instance of the category.
+
+`main`, `header_template` and `footer_template` accept **wikitext only**.
 
 > **Never write structured data to `main` on `Item:`/`Property:` pages.** All structured
-> content lives in the `jsondata` slot; `main` stays empty wikitext (the invoke calls live in
-> `header`/`footer`). When reading a page back via an API or script (e.g.
-> `mwjson.api.getPage`), mutate only `page.slots.jsondata` and set only
-> `page.slots_changed.jsondata = true`.
+> content lives in the `jsondata` slot; `main` stays empty wikitext. When reading a page
+> back via an API or script (e.g. `mwjson.api.getPage`), mutate only
+> `page.slots.jsondata` and set only `page.slots_changed.jsondata = true`.
 
 JSON in `main` is the mistake to watch for: the page then shows a wall of raw JSON, the
 entity has no data as far as the wiki is concerned, and no SMW query will find it.

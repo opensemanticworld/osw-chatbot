@@ -82,6 +82,12 @@ def uuid_from_osw_id(osw_id: str) -> str:
 # Category:Tutorial, so querying Tutorial would return fifty pages that are not skills.
 SKILL_CATEGORY = "Category:OSWc4358938e1f54d8da084c028dfb8c22f"
 
+#: Slots the wiki owns. 'header' and 'footer' always carry the default entity invokes and
+#: nothing else; writing them replaces the rendering machinery on every page that uses
+#: them. Content for one page belongs in 'main'; content for every instance of a category
+#: belongs in 'header_template' / 'footer_template'.
+MANAGED_SLOTS = frozenset({"header", "footer"})
+
 
 def _first_text(value) -> str:
     """OSW stores labels and descriptions as [{text, lang}]. Prefer English, take any."""
@@ -769,11 +775,12 @@ class ChatSession:
 
             Never put structured data into 'main'. On Item: and Property: pages all structured content goes into the 'jsondata' slot and 'main' stays empty wikitext - JSON written to 'main' shows up as a wall of raw text, leaves the entity without data and makes it invisible to queries.
 
-            `slots` maps a slot name to its content:
-            - 'jsondata' and 'jsonschema': a JSON object (not a string).
-            - 'main': wikitext. Exceptions: on pages ending in .js or .css it is JavaScript or CSS source, and in the legacy 'JsonSchema:' namespace it is a JSON object.
-            - 'header' and 'footer': wikitext, normally '{{#invoke:Entity|header}}' and '{{#invoke:Entity|footer}}'. These are set automatically when you write 'jsondata', so you rarely pass them.
-            - 'schema_template', 'data_template', 'header_template', 'footer_template': template source (Handlebars/wikitext).
+            `slots` maps a slot name to its content. Choose by what the content is *for*:
+            - content of this page itself -> 'main'. Wikitext only. Exceptions: on pages ending in .js or .css it is JavaScript or CSS source, and in the legacy 'JsonSchema:' namespace it is a JSON object.
+            - content that should appear on *every instance* of a category -> 'header_template' (rendered above the page) or 'footer_template' (below). Wikitext only.
+            - structured data -> 'jsondata', a JSON object (not a string). 'jsonschema' likewise.
+            - 'schema_template' and 'data_template': template source (Handlebars/wikitext).
+            - 'header' and 'footer': NEVER write these. They always carry the default entity invokes and nothing else; the call is rejected if you include them.
 
             Write wikitext, never Markdown - read the 'osl-page-editing' skill first if you are unsure.
             Scripts (.js/.css) may only be written inside the current user's own space, i.e. 'User:<name>/...'.
@@ -801,6 +808,17 @@ class ChatSession:
                 raise ClientToolError(
                     "'slots' must be an object mapping slot name to content, "
                     f"got {type(slots).__name__}"
+                )
+            managed = sorted(MANAGED_SLOTS.intersection(slots))
+            if managed:
+                # A prompt rule was not enough - the model writes these anyway, and a
+                # replaced header/footer breaks the entity rendering on every instance.
+                raise ClientToolError(
+                    f"{', '.join(repr(s) for s in managed)} cannot be written: header and "
+                    "footer always carry the default invokes and nothing else. Content for "
+                    "this page goes in 'main'; content that should appear on every "
+                    "instance of a category goes in 'header_template' (above) or "
+                    "'footer_template' (below); structured data goes in 'jsondata'."
                 )
             osw_id = osw_id_of(title)
             if osw_id is not None and osw_id not in session.minted_ids:

@@ -1076,3 +1076,31 @@ def test_trimming_a_long_message_keeps_its_other_fields():
     assert trimmed.id == "keep-me"
     assert len(trimmed.content) < 200
 
+
+
+def test_writing_header_or_footer_is_refused():
+    """A prompt rule was not enough; these slots are rejected at the tool.
+
+    header/footer carry the default entity invokes and nothing else - overwriting them
+    makes the entity render blank on every page that uses them.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession, ClientToolError
+
+    session = ChatSession(actions=["websearch", "edit"])
+    try:
+        # The skill gate fires before any slot checking, which is the right order - the
+        # skill is where the rule is taught. Satisfy it so the guard itself is reachable.
+        session.loaded_skills.add("osl-page-editing")
+        edit = next(t for t in session.tools if t.name == "edit_page")
+        for slot in ("header", "footer"):
+            with pytest.raises(ClientToolError) as caught:
+                asyncio.run(edit.coroutine(title="Item:OSW1", slots={slot: "x"}))
+            message = str(caught.value)
+            assert slot in message
+            # The refusal has to say where the content actually goes, or the model
+            # retries the same write.
+            assert "header_template" in message and "main" in message
+    finally:
+        session.close()
