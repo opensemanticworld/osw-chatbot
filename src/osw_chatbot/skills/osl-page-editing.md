@@ -51,6 +51,28 @@ A wikitable:
 |}
 ```
 
+### Showing wikitext instead of running it
+
+Writing an example of wikitext **runs** it. `[[Category:Foo]]` in a page really puts that
+page in the category, `[[HasProperty::Value]]` really asserts the fact to SMW, and
+`{{#invoke:Entity|header}}` really calls the module. This is how a page that documents the
+wiki ends up a member of a category it was only talking about.
+
+`<code>` does **not** stop the parser - it only styles. The tags that stop it are:
+
+| showing | use |
+|---|---|
+| a short example inside a sentence | `<code><nowiki>[[Category:Foo]]</nowiki></code>` |
+| a block of code | `<syntaxhighlight lang="js">…</syntaxhighlight>` |
+| a block with no language | `<pre>…</pre>` |
+
+`<syntaxhighlight>` and `<pre>` already suppress expansion, so a fenced block needs
+nothing extra. Inline spans are the ones that bite, because `<code>` looks like it should
+be enough.
+
+Check your own output before saving: if an example contains `[[`, `]]`, `{{` or `}}` and
+is not inside one of those three, it will execute.
+
 ---
 
 ## 2. Inline queries and data tables
