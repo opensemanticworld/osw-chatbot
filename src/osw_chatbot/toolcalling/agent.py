@@ -1220,6 +1220,13 @@ class ChatSession:
         while current and current not in seen:
             seen.add(current)
             chain.append(current)
+            # Someone already walked from here upwards. Reuse that tail rather than
+            # re-fetching it: hierarchies converge, so the second category in a session
+            # usually meets the first one's chain within a level or two.
+            known = self._superclass_cache.get(current)
+            if known is not None and len(chain) > 1:
+                chain = chain[:-1] + known
+                break
             try:
                 data = await self.call_client_side_tool(
                     "get_page_content", [[current], False]
@@ -1239,7 +1246,11 @@ class ChatSession:
                     continue
                 parent = next((p for p in parents if isinstance(p, str)), None)
             current = parent
-        self._superclass_cache[category] = chain
+        # Cache every suffix, not only the category asked for. Walking Tutorial also
+        # answers Article, CreativeWork, Item and Entity for free, which is most of
+        # the cost of the next lookup.
+        for i, step in enumerate(chain):
+            self._superclass_cache.setdefault(step, chain[i:])
         return chain
 
     async def skills_for_category(self, category):
@@ -1251,6 +1262,11 @@ class ChatSession:
         order it should be followed.
         """
         skills = await self._wiki_skill_pages()
+        if not any(s.get("related_to") for s in skills.values()):
+            # Nothing is gated on this wiki, so the chain walk - five sequential round
+            # trips through the browser - would cost that to learn nothing.
+            return []
+
         by_title = {s["title"]: s for s in skills.values() if s.get("title")}
         chain = await self._superclasses(category)
 

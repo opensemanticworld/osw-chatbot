@@ -1287,3 +1287,53 @@ def test_a_prerequisite_cycle_does_not_hang_the_gate():
         assert sorted(asyncio.run(session.skills_for_category("Category:X"))) == ["a", "b"]
     finally:
         session.close()
+
+
+def test_the_gate_costs_nothing_when_no_skill_is_gated():
+    """The chain walk is five sequential round trips; do not spend them to learn nothing."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "some-skill": {
+                "name": "some-skill", "title": "Item:OSWx", "description": "", "body": "",
+                "related_to": [], "required_predecessors": [],
+            }
+        }
+        calls = []
+
+        async def record(name, args, **kw):
+            calls.append(name)
+            raise AssertionError("the gate must not walk when nothing is gated")
+
+        session.call_client_side_tool = record
+        assert asyncio.run(session.skills_for_category("Category:Anything")) == []
+        assert calls == []
+    finally:
+        session.close()
+
+
+def test_walking_one_chain_answers_the_rest_of_it():
+    """Hierarchies converge; the second lookup should not re-fetch the shared tail."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._superclass_cache["Category:Tutorial"] = [
+            "Category:Tutorial", "Category:Article", "Category:Item", "Category:Entity"
+        ]
+        for i, step in enumerate(session._superclass_cache["Category:Tutorial"]):
+            session._superclass_cache.setdefault(
+                step, session._superclass_cache["Category:Tutorial"][i:]
+            )
+        # Article was never asked for directly, but walking Tutorial passed through it.
+        assert asyncio.run(session._superclasses("Category:Article")) == [
+            "Category:Article", "Category:Item", "Category:Entity"
+        ]
+    finally:
+        session.close()
