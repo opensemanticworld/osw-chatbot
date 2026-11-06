@@ -17,6 +17,7 @@ from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from osw_chatbot.config import (
     CLIENT_TOOL_TIMEOUT,
     MAX_INLINE_FILE_BYTES,
+    MAX_PROMPT_CHARS,
     MAX_TOOL_RESULT_CHARS,
     CONFIRM_TIMEOUT,
     PARENT_ORIGINS,
@@ -1236,9 +1237,35 @@ class ChatSession:
                 notes.append(f"Content of {name}:\n{_truncate(att['text'])}")
         return [{"type": "text", "text": "\n".join([prompt, *notes])}, *blocks]
 
+    def _fit_prompt(self, content) -> bool:
+        """Drop oldest turns until the prompt plausibly fits. True if anything went.
+
+        Nothing counted the whole prompt before - only one observation at a time
+        (MAX_TOOL_RESULT_CHARS) - which is how a 2,006,895 token request reached the
+        vendor and came back a 400. Over the limit the turn fails outright rather than
+        degrading, so it is worth spending a cheap estimate to avoid.
+
+        The estimate is characters/4, not a real tokenizer: tokenizing the whole history
+        every turn costs more than the imprecision does, and the budget is set well below
+        the hard limit so the slack absorbs the error.
+        """
+        budget = MAX_PROMPT_CHARS
+        fixed = len(SYSTEM_TEXT) + len(as_text(content))
+        dropped = False
+        while self.chat_history:
+            used = fixed + sum(len(as_text(m.content)) for m in self.chat_history)
+            if used <= budget:
+                break
+            # Two at a time: a turn is a human message and its reply, and leaving half
+            # of one behind reads as the model ignoring what was just said.
+            self.chat_history = self.chat_history[2:]
+            dropped = True
+        return dropped
+
     async def invoke(self, prompt, attachments=None, callbacks=None):
         self.chat_history = trim_history(self.chat_history)
         content = self._content(prompt, attachments)
+        trimmed = self._fit_prompt(content)
         res = await self.agent_executor.ainvoke(
             {
                 "input": [HumanMessage(content=content)],
@@ -1249,6 +1276,14 @@ class ChatSession:
         # Anthropic returns a list of content blocks where OpenAI returns a
         # string; the chat UI and the stored history both want plain text.
         res["output"] = as_text(res["output"])
+        if trimmed:
+            # Say it rather than quietly forgetting: the user is the only one who can
+            # tell whether what was dropped mattered.
+            res["output"] += (
+                "\n\n*(This conversation got long, so the earliest messages were dropped "
+                "to stay within the model's context. Repeat anything from the start that "
+                "still matters.)*"
+            )
         self.chat_history.extend(
             [
                 HumanMessage(content=prompt),

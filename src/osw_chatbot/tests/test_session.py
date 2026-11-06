@@ -1140,3 +1140,34 @@ def test_a_page_written_this_session_is_not_reread():
         assert "session" in out["Item:OSW1"]["note"]
     finally:
         session.close()
+
+
+def test_a_long_history_is_trimmed_to_fit_the_prompt():
+    """Over the limit the turn fails outright, so trimming beats not trimming."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from osw_chatbot.config import MAX_PROMPT_CHARS
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        big = "z" * 50_000
+        session.chat_history = [
+            m
+            for _ in range(40)
+            for m in (HumanMessage(content=big), AIMessage(content=big))
+        ]
+        assert sum(len(m.content) for m in session.chat_history) > MAX_PROMPT_CHARS
+
+        dropped = session._fit_prompt("a short prompt")
+        assert dropped is True
+        assert sum(len(m.content) for m in session.chat_history) <= MAX_PROMPT_CHARS
+        # Turns are dropped in pairs, so a human message never loses its reply.
+        assert len(session.chat_history) % 2 == 0
+
+        # A short history is left entirely alone.
+        session.chat_history = [HumanMessage(content="hi"), AIMessage(content="hello")]
+        assert session._fit_prompt("x") is False
+        assert len(session.chat_history) == 2
+    finally:
+        session.close()

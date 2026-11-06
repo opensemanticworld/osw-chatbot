@@ -103,3 +103,13 @@ TOKEN_MAX_AGE = int(os.getenv("CHATBOT_TOKEN_MAX_AGE", "86400"))
 # "openai"  -> OpenAI-compatible surface of Microsoft Foundry (/openai/v1)
 # "claude"  -> Anthropic Messages surface of Microsoft Foundry (/anthropic)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+# Largest prompt we will assemble, in characters, across system text + history + the
+# current input. Roughly four characters per token, so ~150k tokens: well under the
+# model's 1M, because the agent scratchpad grows inside the turn after this check and
+# cannot be measured here.
+#
+# MAX_TOOL_RESULT_CHARS bounds one observation; this bounds the total. Without it a long
+# session simply fails - "prompt is too long: 2006895 tokens > 1000000 maximum" is a 400
+# from the vendor, i.e. no answer rather than a worse one.
+MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", str(600_000)))
