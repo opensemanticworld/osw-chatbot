@@ -1022,3 +1022,57 @@ def test_one_huge_tool_result_cannot_fail_the_turn():
         coroutine = None
 
     assert _bounded(SyncOnly()) is not None
+
+
+def test_replayed_history_has_no_dangling_tool_calls():
+    """A tool_use with no tool_result is malformed, and it made the assistant lie.
+
+    Dropping ToolMessages while keeping tool_calls on the AIMessage that made them left
+    the model's own "Done" as the only evidence anything happened - so it stopped calling
+    tools and asserted success instead, worsening as a session grew.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from osw_chatbot.chat.history import dumps, loads
+
+    msgs = [
+        HumanMessage(content="edit the page"),
+        AIMessage(
+            content="I will edit it",
+            tool_calls=[
+                {
+                    "name": "edit_page",
+                    "args": {"title": "Item:X", "slots": {"main": "x" * 5000}},
+                    "id": "c1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="ok, revision 42 saved", tool_call_id="c1"),
+        AIMessage(content="Done - I have updated the page."),
+    ]
+    back = loads(dumps(msgs))
+
+    assert not [c for m in back for c in (getattr(m, "tool_calls", None) or [])]
+
+    # The record has to survive, or the model still cannot tell what it already did.
+    transcript = "\n".join(str(m.content) for m in back)
+    assert "edit_page" in transcript
+    assert "revision 42" in transcript
+    assert "Item:X" in transcript
+
+    # ...without the payload that made tool messages worth dropping.
+    assert "x" * 200 not in transcript
+
+
+def test_trimming_a_long_message_keeps_its_other_fields():
+    """type(message)(content=...) dropped tool_calls, so behaviour depended on length."""
+    from langchain_core.messages import AIMessage
+
+    from osw_chatbot.chat.history import trim_history
+
+    long_ai = AIMessage(content="y" * 50_000, id="keep-me")
+    (trimmed,) = trim_history([long_ai], max_messages=5, max_chars=100)
+    assert trimmed.id == "keep-me"
+    assert len(trimmed.content) < 200
+
