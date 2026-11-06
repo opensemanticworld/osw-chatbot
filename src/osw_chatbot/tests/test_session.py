@@ -1171,3 +1171,33 @@ def test_a_long_history_is_trimmed_to_fit_the_prompt():
         assert len(session.chat_history) == 2
     finally:
         session.close()
+
+
+def test_a_mistyped_osw_id_is_caught_before_it_becomes_a_second_page():
+    """IDs drift between edits; creating the near-miss leaves two half-written pages."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import (
+        ChatSession,
+        ClientToolError,
+        nearest_known_id,
+    )
+
+    good = "a" * 32
+    assert nearest_known_id("a" * 31 + "b", {good}) == good  # one character off
+    assert nearest_known_id(good, {good}) is None  # identical is not a near miss
+    assert nearest_known_id("b" * 32, {good}) is None  # a different entity
+    assert nearest_known_id("a" * 31, {good}) is None  # different length
+
+    session = ChatSession(actions=["websearch", "edit"])
+    try:
+        session.loaded_skills.add("osl-page-editing")
+        session.minted_ids.add(good)
+        edit = next(t for t in session.tools if t.name == "edit_page")
+        typo = "Item:OSW" + ("a" * 31 + "b").upper()
+        with pytest.raises(ClientToolError) as caught:
+            asyncio.run(edit.coroutine(title=typo, slots={"main": "x"}))
+        # Naming the right title matters: without it the model guesses again.
+        assert good.upper() in str(caught.value)
+    finally:
+        session.close()

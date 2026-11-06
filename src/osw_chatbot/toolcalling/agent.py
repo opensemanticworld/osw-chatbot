@@ -74,6 +74,25 @@ def osw_id_of(title: str) -> Optional[str]:
     return match.group(2).lower()
 
 
+def nearest_known_id(osw_id: str, known) -> Optional[str]:
+    """A known OSW-ID that `osw_id` is a near-miss of, or None.
+
+    OSW-IDs are 32 hex characters with no redundancy, so a model copying one across turns
+    transposes or drops a character and produces something that is still well-formed and
+    points at nothing. Same length and a handful of differing positions is a typo; more
+    than that is a different entity and must not be silently rewritten.
+    """
+    if not osw_id:
+        return None
+    for candidate in known:
+        if candidate == osw_id or len(candidate) != len(osw_id):
+            continue
+        differing = sum(1 for a, b in zip(candidate, osw_id) if a != b)
+        if 0 < differing <= 3:
+            return candidate
+    return None
+
+
 def uuid_from_osw_id(osw_id: str) -> str:
     """OSW-IDs are a uuid with the hyphens taken out; put them back."""
     return str(uuid.UUID(osw_id))
@@ -847,6 +866,21 @@ class ChatSession:
                 )
             osw_id = osw_id_of(title)
             if osw_id is not None and osw_id not in session.minted_ids:
+                # A near-miss of an id this session already handled is a transcription
+                # slip, not a new entity: creating it would leave two half-written pages
+                # and the user looking at whichever one the model mentions last.
+                known = set(session.minted_ids) | {
+                    i
+                    for i in (osw_id_of(t) for t in session.written_pages)
+                    if i is not None
+                }
+                near = nearest_known_id(osw_id, known)
+                if near is not None:
+                    raise ClientToolError(
+                        f"'{title}' differs by a few characters from OSW{near.upper()}, "
+                        "which this session already worked on. Use that title exactly as "
+                        "written, or call 'new_osw_id' if you really mean a new entity."
+                    )
                 # Either this is a real page being edited, or the model made the
                 # id up. Only the wiki can tell us which.
                 if not await session._page_exists(title):
