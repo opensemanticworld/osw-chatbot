@@ -955,7 +955,9 @@ class ChatSession:
         async def open_sandbox(notebook: str = "") -> str:
             """Opens the in-browser Python sandbox for the user to look at, optionally on a notebook already uploaded to this wiki. Pass a file page title such as 'File:OSW....ipynb', or leave it empty for an empty sandbox.
 
-            Returns 'where': 'window' when it opened in its own window, or 'panel' when the browser blocked that and it opened beside the page instead. Tell the user which one they got - saying "I opened a new tab" when a panel appeared sends them looking for something that is not there.
+            Returns 'where': 'window' when it opened in its own window, or 'panel' when it opened docked to the left of the page instead. A panel is the normal outcome, not a failure: browsers only allow a new window from a click, and a tool call is not one. Pass on the 'message' you get back - it tells the user about the arrow button that moves the panel into its own window, which they can click and you cannot.
+
+            Never say "I opened a new tab" unless 'where' is 'window'; it sends the user looking for something that is not there.
 
             Read the 'sandbox' skill before calling this - it says when the sandbox is the right answer and when chat is faster, and the first cell costs the user about 40 seconds."""
 
