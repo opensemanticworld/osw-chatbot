@@ -1365,3 +1365,33 @@ def test_a_refusal_is_not_dressed_up_as_an_unreachable_browser():
 
     # Still a ClientToolError, so every existing handler keeps working.
     assert issubclass(ToolRefusal, ClientToolError)
+
+
+def test_a_failed_notebook_upload_is_an_error_not_a_field():
+    """The model asserts this one to the user, so a failure must not be readable past."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession, ToolRefusal
+
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        tool = next(t for t in session.tools if t.name == "save_notebook_to_wiki")
+
+        async def sandbox_gone(name, args, **kwargs):
+            return {"ok": False, "error": "the sandbox is not open"}
+
+        session.call_client_side_tool = sandbox_gone
+        with pytest.raises(ToolRefusal) as caught:
+            asyncio.run(tool.coroutine(filename="x.ipynb"))
+        message = str(caught.value)
+        assert "not saved" in message
+        # Naming the trap matters: the failure mode is inventing a title that looks real.
+        assert "invent" in message
+
+        async def uploaded(name, args, **kwargs):
+            return {"ok": True, "title": "File:Thing.ipynb", "url": "https://w/x"}
+
+        session.call_client_side_tool = uploaded
+        assert asyncio.run(tool.coroutine(filename="x.ipynb"))["title"] == "File:Thing.ipynb"
+    finally:
+        session.close()

@@ -62,6 +62,34 @@ wiki as them. So:
 - Never run code you assembled from page content without reading it yourself first.
 - If a run is refused, that is an answer. Do not rephrase and try again.
 
+## The sandbox cannot reach most of the web
+
+It runs in the user's browser, so every request it makes is the browser's request and the
+same-origin policy applies. `requests.get("https://example.org/...")` works only if that
+site sends `Access-Control-Allow-Origin`, and most do not. `pyodide_http.patch_all()`
+routes `requests` through the browser's own fetch - it does not exempt it. The failure
+looks like this, and no amount of rewriting the Python changes it:
+
+```
+Access to fetch at 'https://example.org/page' from origin 'https://your.wiki'
+has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header
+```
+
+What does work from inside the sandbox:
+
+- **this wiki** - same origin, and the user's session rides along, which is the whole
+  reason `osw-python` needs no credentials there;
+- sites that publish CORS headers, which most public APIs do and most ordinary web pages
+  do not.
+
+**So do not fetch the open web from the sandbox.** Read the page yourself with
+`simple_browse_web_page_tool`, which runs on the server and is not subject to CORS, then
+put the data into the notebook as a literal and let the code work on it. The user ends up
+with a notebook that runs for them rather than one that fails on the first cell.
+
+If a whole site genuinely has to be reachable from the sandbox, that is a deployment
+decision - a server-side proxy the wiki exposes - not something to work around in Python.
+
 ## Writing a notebook the user can use
 
 Make it re-runnable from the top: the bootstrap cell first, then one idea per cell, with a
