@@ -1007,7 +1007,9 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def sandbox_status() -> dict:
-            """Whether the sandbox is open and its kernel ready. Returns {'open': bool, 'ready': bool}. Use it before a long run to tell the user whether they are about to wait for a cold start."""
+            """Where the sandbox is and whether it is usable. Returns 'where': 'window' (its own browser window), 'panel' (docked beside the page) or 'hidden' (running, nothing on screen), plus 'open', 'ready', 'visible' and 'poppedOut'.
+
+            Call it before saying anything about what the user can see - "it is open" is not the same as "you can see it", and a page reload leaves the conversation intact while throwing the sandbox away. Also worth calling before a long run, to tell them whether they are about to wait for a cold start."""
 
             return await session.call_client_side_tool("sandbox_status", [])
 
