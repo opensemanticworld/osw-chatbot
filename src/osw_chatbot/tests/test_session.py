@@ -1025,11 +1025,9 @@ def test_one_huge_tool_result_cannot_fail_the_turn():
 
 
 def test_replayed_history_has_no_dangling_tool_calls():
-    """A tool_use with no tool_result is malformed, and it made the assistant lie.
+    """A tool_use with no tool_result is malformed input, and the record is evidence.
 
-    Dropping ToolMessages while keeping tool_calls on the AIMessage that made them left
-    the model's own "Done" as the only evidence anything happened - so it stopped calling
-    tools and asserted success instead, worsening as a session grew.
+    Without it the only trace of an edit is the assistant's claim to have made one.
     """
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -1066,7 +1064,7 @@ def test_replayed_history_has_no_dangling_tool_calls():
 
 
 def test_trimming_a_long_message_keeps_its_other_fields():
-    """type(message)(content=...) dropped tool_calls, so behaviour depended on length."""
+    """Truncating a long message must not cost it the fields that identify it."""
     from langchain_core.messages import AIMessage
 
     from osw_chatbot.chat.history import trim_history
@@ -1107,7 +1105,7 @@ def test_writing_header_or_footer_is_refused():
 
 
 def test_a_loaded_skill_is_not_sent_twice():
-    """The body is already upstream in the conversation; resending spends it again."""
+    """The body is already upstream in the conversation; resending spends it twice."""
     import asyncio
 
     from osw_chatbot.toolcalling.agent import ChatSession
@@ -1143,7 +1141,7 @@ def test_a_page_written_this_session_is_not_reread():
 
 
 def test_a_long_history_is_trimmed_to_fit_the_prompt():
-    """Over the limit the turn fails outright, so trimming beats not trimming."""
+    """Past the model's limit the request is refused, so trimming beats not trimming."""
     from langchain_core.messages import AIMessage, HumanMessage
 
     from osw_chatbot.config import MAX_PROMPT_CHARS
@@ -1174,7 +1172,7 @@ def test_a_long_history_is_trimmed_to_fit_the_prompt():
 
 
 def test_a_mistyped_osw_id_is_caught_before_it_becomes_a_second_page():
-    """IDs drift between edits; creating the near-miss leaves two half-written pages."""
+    """A transposed OSW-ID is still well formed, so only a check catches it."""
     import asyncio
 
     from osw_chatbot.toolcalling.agent import (
@@ -1337,3 +1335,26 @@ def test_walking_one_chain_answers_the_rest_of_it():
         ]
     finally:
         session.close()
+
+
+def test_a_refusal_is_not_dressed_up_as_an_unreachable_browser():
+    """A refusal carries its own instruction and must reach the model intact."""
+    from osw_chatbot.toolcalling.agent import (
+        ClientToolError,
+        ToolRefusal,
+        _tool_error_observation,
+    )
+
+    refusal = _tool_error_observation(
+        ToolRefusal("read the 'osl-page-editing' skill before writing this page")
+    )
+    assert "browser could not be reached" not in refusal
+    assert "do not retry" not in refusal
+    assert "osl-page-editing" in refusal
+
+    # A real transport failure still gets the advice it needs.
+    transport = _tool_error_observation(ClientToolError("the browser did not answer"))
+    assert "browser could not be reached" in transport
+
+    # Still a ClientToolError, so every existing handler keeps working.
+    assert issubclass(ToolRefusal, ClientToolError)

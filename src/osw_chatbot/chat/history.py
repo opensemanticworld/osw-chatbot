@@ -2,19 +2,13 @@
 
 Tool observations are not stored verbatim: `where_am_i` alone ships up to 100 kB of page
 HTML and `get_file_content` base64 data urls, none of which belong in a 5 MB localStorage
-budget shared with MediaWiki itself. They are replaced by a one-line record of what ran
-and what came back, which costs a few hundred characters and keeps the thing that matters.
+budget shared with MediaWiki itself. Each tool call is kept as a one-line record of what
+ran and what came back, folded into the AIMessage that made it.
 
-That record is not a nicety. Dropping tool messages while *keeping* the `tool_calls` on the
-AIMessages that requested them produced a replayed transcript of the shape
-
-    HumanMessage | AIMessage(tool_use: edit_page, no result) | AIMessage("Done, I updated it")
-
-which is malformed - the Anthropic Messages API requires every `tool_use` to be answered by
-a `tool_result` - and, worse, leaves the model's own unverified claim as the only evidence
-anything happened. The assistant then stopped calling tools and asserted success instead,
-getting more confident the longer a session ran, and re-read skills it had already read
-because nothing recorded that it had.
+Two things that record has to get right. The Anthropic Messages API requires every
+`tool_use` to be answered by a `tool_result`, so no `tool_calls` may survive into a
+replayed turn. And the model needs evidence of its own actions: without it the only trace
+of an edit is the assistant's claim to have made one, which it will believe and act on.
 """
 
 import json
@@ -113,9 +107,8 @@ def trim_history(messages, max_messages=None, max_chars=None):
     for message in messages[-max_messages:]:
         content = message.content
         if isinstance(content, str) and len(content) > max_chars:
-            # model_copy, not type(message)(content=...): reconstructing dropped every
-            # other field - tool_calls among them - so behaviour depended on whether a
-            # message happened to be long enough to be rebuilt.
+            # model_copy, not type(message)(content=...): reconstructing would keep
+            # only the content and silently drop every other field.
             message = message.model_copy(
                 update={"content": content[:max_chars] + " [truncated]"}
             )

@@ -77,13 +77,11 @@ HISTORY_MAX_CHARS_PER_MESSAGE = int(os.getenv("HISTORY_MAX_CHARS_PER_MESSAGE", "
 # Largest contribution a single tool observation, or one attachment's extracted
 # text, may make to the prompt.
 #
-# chat_history is trimmed on every turn by the three limits above, but the agent
-# scratchpad is not trimmed at all: whatever a tool returns goes to the model
-# whole, inside the same request. One oversized result therefore does not degrade
-# the answer, it fails the turn - the vendor rejects the request outright with
-# "prompt is too long: 2006895 tokens > 1000000 maximum", which surfaces as a
-# traceback rather than as an answer. Attachments have the same hole: _content
-# appends att['text'] unbounded, and ATTACHMENT_MAX_BYTES allows 20 MB.
+# chat_history is trimmed on every turn by the three limits above; the agent scratchpad
+# is not trimmed at all, so whatever a tool returns goes to the model whole inside the
+# same request. An oversized result does not degrade the answer, it fails the turn: the
+# vendor refuses the request rather than truncating it. Attachment text is bounded here
+# for the same reason, since ATTACHMENT_MAX_BYTES allows 20 MB.
 #
 # 120k characters is roughly 30k tokens, so several large observations still fit
 # in a 1M window alongside the history and the system prompt. Raise it only
@@ -110,9 +108,9 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 # model's 1M, because the agent scratchpad grows inside the turn after this check and
 # cannot be measured here.
 #
-# MAX_TOOL_RESULT_CHARS bounds one observation; this bounds the total. Without it a long
-# session simply fails - "prompt is too long: 2006895 tokens > 1000000 maximum" is a 400
-# from the vendor, i.e. no answer rather than a worse one.
+# MAX_TOOL_RESULT_CHARS bounds one observation; this bounds the total. Past the model's
+# limit the vendor refuses the request outright, so a long session needs a ceiling or it
+# stops answering altogether.
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", str(600_000)))
 
 ## Skills
