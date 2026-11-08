@@ -953,7 +953,9 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def open_sandbox(notebook: str = "") -> str:
-            """Opens the in-browser Python sandbox in its own tab, optionally on a notebook already uploaded to this wiki. Pass a file page title such as 'File:OSW....ipynb', or leave it empty for an empty sandbox. Returns 'accepted' once the tab is open.
+            """Opens the in-browser Python sandbox for the user to look at, optionally on a notebook already uploaded to this wiki. Pass a file page title such as 'File:OSW....ipynb', or leave it empty for an empty sandbox.
+
+            Returns 'where': 'window' when it opened in its own window, or 'panel' when the browser blocked that and it opened beside the page instead. Tell the user which one they got - saying "I opened a new tab" when a panel appeared sends them looking for something that is not there.
 
             Read the 'sandbox' skill before calling this - it says when the sandbox is the right answer and when chat is faster, and the first cell costs the user about 40 seconds."""
 
@@ -1063,6 +1065,20 @@ class ChatSession:
             """Deletes one cell from a notebook. Ask the user before removing anything they wrote."""
 
             return await lab("delete-cell", notebookPath=notebook_path, cellId=cell_id)
+
+        @langchain_core.tools.tool
+        async def save_notebook_to_wiki(
+            filename: str = "", comment: str = ""
+        ) -> dict:
+            """Uploads the sandbox's open notebook to the wiki as a file, so it outlives the session. Returns its 'title', e.g. 'File:OSW....ipynb'.
+
+            The sandbox's own storage is the browser's and does not survive clearing site data, so offer this whenever the user has code worth keeping. Afterwards tell them the notebook can be reopened at any time from that file page, or by passing the title to 'open_sandbox' - they do not have to ask you to rebuild it.
+
+            'filename' should end in .ipynb and describe the contents; the user confirms the upload."""
+
+            return await session.call_client_side_tool(
+                "save_notebook_to_wiki", [filename, comment]
+            )
 
         @langchain_core.tools.tool
         async def notebook_save(notebook_path: str) -> dict:
@@ -1180,7 +1196,7 @@ class ChatSession:
                 open_sandbox, create_notebook, run_in_sandbox, sandbox_status,
                 kernel_start, kernel_list, kernel_execute, kernel_shutdown,
                 notebook_info, notebook_add_cell, notebook_run_cell,
-                notebook_delete_cell, notebook_save,
+                notebook_delete_cell, notebook_save, save_notebook_to_wiki,
             ]
         # load_skill is registered whenever *any* source of skills exists. The wiki's own
         # are discovered at call time, so the bundled ones being empty does not mean there

@@ -29,6 +29,8 @@ LABELS = {
     "notebook_run_cell": ("Running a notebook cell", "Ran a notebook cell"),
     "notebook_delete_cell": ("Deleting a notebook cell", "Deleted a notebook cell"),
     "notebook_save": ("Saving the notebook", "Saved the notebook"),
+    "save_notebook_to_wiki": ("Uploading the notebook to the wiki",
+                             "Uploaded the notebook to the wiki"),
     "where_am_i": ("Looking at the current page", "Looked at the current page"),
     "full_text_search": ("Searching the wiki for {arg}", "Searched the wiki for {arg}"),
     "find_page_from_topic": ("Looking up the category for {arg}", "Looked up {arg}"),
