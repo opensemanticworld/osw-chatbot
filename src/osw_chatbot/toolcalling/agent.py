@@ -990,6 +990,86 @@ class ChatSession:
 
             return await session.call_client_side_tool("sandbox_status", [])
 
+        # The jupyterlab-ai-commands surface, so the chat assistant can do what the
+        # in-lab agent can. The sandbox refuses anything outside that namespace, which is
+        # what keeps `filebrowser:open-url` - and the `?fromURL=` allowlist it would walk
+        # around - out of reach.
+        async def lab(command: str, **kwargs) -> dict:
+            return await session.call_client_side_tool(
+                "sandbox_command", [f"jupyterlab-ai-commands:{command}", kwargs]
+            )
+
+        @langchain_core.tools.tool
+        async def kernel_start() -> dict:
+            """Starts a Python kernel in the sandbox and returns its 'kernelId'. Use the id for 'kernel_execute'. A kernel keeps its variables between calls, so start one and reuse it rather than starting a fresh one per snippet."""
+
+            return await lab("start-kernel")
+
+        @langchain_core.tools.tool
+        async def kernel_list() -> dict:
+            """Lists kernels already running in the sandbox, with their ids. Reuse a running kernel rather than starting another - a new one has none of the imports or variables of the old."""
+
+            return await lab("list-kernels")
+
+        @langchain_core.tools.tool
+        async def kernel_execute(kernel_id: str, code: str) -> dict:
+            """Runs Python in a kernel and returns its actual output. Nothing is written into a notebook, so this is the right tool for working something out - a lookup, a calculation, a check - where the user does not need the code afterwards.
+
+            Returns 'outputs' with what the code printed or evaluated, plus 'errorName' and 'traceback' when it raised. Use 'notebook_add_cell' and 'notebook_run_cell' instead when the user should keep the code."""
+
+            if not (code or "").strip():
+                raise ToolRefusal("'code' is empty")
+            if not (kernel_id or "").strip():
+                raise ToolRefusal(
+                    "'kernel_id' is required - call 'kernel_start' or 'kernel_list' first"
+                )
+            return await lab("execute-in-kernel", kernelId=kernel_id, code=code)
+
+        @langchain_core.tools.tool
+        async def kernel_shutdown(kernel_id: str) -> dict:
+            """Shuts a kernel down and frees its memory. The user loses every variable in it, so only when they are finished."""
+
+            return await lab("shutdown-kernel", kernelId=kernel_id)
+
+        @langchain_core.tools.tool
+        async def notebook_info(notebook_path: str = "") -> dict:
+            """What notebook is open in the sandbox: its path, its cells and which cell is active. Call it before adding or running a cell so you act on the notebook you mean."""
+
+            return await lab("get-notebook-info", notebookPath=notebook_path)
+
+        @langchain_core.tools.tool
+        async def notebook_add_cell(
+            notebook_path: str, content: str, cell_type: str = "code"
+        ) -> dict:
+            """Appends one cell to a notebook. 'cell_type' is 'code' or 'markdown'. The cell is added but not run - 'notebook_run_cell' runs it."""
+
+            if cell_type not in ("code", "markdown"):
+                raise ToolRefusal("'cell_type' must be 'code' or 'markdown'")
+            return await lab(
+                "add-cell",
+                notebookPath=notebook_path,
+                content=content,
+                cellType=cell_type,
+            )
+
+        @langchain_core.tools.tool
+        async def notebook_run_cell(notebook_path: str, cell_id: str) -> dict:
+            """Runs one cell of a notebook and returns its output, so the user keeps the code and you see the result. Get 'cell_id' from 'notebook_info' - running the wrong cell is worse than running none."""
+
+            return await lab("run-cell", notebookPath=notebook_path, cellId=cell_id)
+
+        @langchain_core.tools.tool
+        async def notebook_delete_cell(notebook_path: str, cell_id: str) -> dict:
+            """Deletes one cell from a notebook. Ask the user before removing anything they wrote."""
+
+            return await lab("delete-cell", notebookPath=notebook_path, cellId=cell_id)
+
+        @langchain_core.tools.tool
+        async def notebook_save(notebook_path: str) -> dict:
+            """Saves the notebook to the sandbox's own storage. That storage is the browser's, so it does not survive clearing site data - offer to upload the notebook to the wiki for anything worth keeping."""
+
+            return await lab("save-notebook", notebookPath=notebook_path)
+
         @langchain_core.tools.tool
         async def load_skill(name: str) -> str:
             """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not.
@@ -1096,7 +1176,12 @@ class ChatSession:
         # sandbox at all. The wiki signs the action list into the token, so this cannot be
         # turned on from here.
         if "code-sandbox" in session.actions:
-            tools += [open_sandbox, create_notebook, run_in_sandbox, sandbox_status]
+            tools += [
+                open_sandbox, create_notebook, run_in_sandbox, sandbox_status,
+                kernel_start, kernel_list, kernel_execute, kernel_shutdown,
+                notebook_info, notebook_add_cell, notebook_run_cell,
+                notebook_delete_cell, notebook_save,
+            ]
         # load_skill is registered whenever *any* source of skills exists. The wiki's own
         # are discovered at call time, so the bundled ones being empty does not mean there
         # is nothing to load.

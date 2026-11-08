@@ -17,6 +17,18 @@ MAX_ARG = 60
 
 # tool name -> (pending, done). {arg} is the summarised key argument.
 LABELS = {
+    # The jupyterlite surface. Without an entry a step renders as a bare
+    # "Running notebook_add_cell", which tells the user nothing about what is happening
+    # to their sandbox.
+    "kernel_start": ("Starting a Python kernel", "Started a Python kernel"),
+    "kernel_list": ("Looking for running kernels", "Looked for running kernels"),
+    "kernel_execute": ("Running Python in the sandbox", "Ran Python in the sandbox"),
+    "kernel_shutdown": ("Shutting the kernel down", "Shut the kernel down"),
+    "notebook_info": ("Looking at the open notebook", "Looked at the open notebook"),
+    "notebook_add_cell": ("Adding a cell to the notebook", "Added a cell to the notebook"),
+    "notebook_run_cell": ("Running a notebook cell", "Ran a notebook cell"),
+    "notebook_delete_cell": ("Deleting a notebook cell", "Deleted a notebook cell"),
+    "notebook_save": ("Saving the notebook", "Saved the notebook"),
     "where_am_i": ("Looking at the current page", "Looked at the current page"),
     "full_text_search": ("Searching the wiki for {arg}", "Searched the wiki for {arg}"),
     "find_page_from_topic": ("Looking up the category for {arg}", "Looked up {arg}"),

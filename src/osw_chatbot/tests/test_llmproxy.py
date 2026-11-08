@@ -31,12 +31,16 @@ def proxy(monkeypatch):
     monkeypatch.setenv("LLM_PROXY_AUTH_HEADER", "authorization")
     monkeypatch.setenv("LLM_PROXY_AUTH_SCHEME", "Bearer")
 
-    # Re-imported rather than reloaded in place: the module reads its configuration at
-    # import time, so a test that only set the environment would exercise whatever the
-    # previous test left behind.
+    # Reloaded in dependency order, because each of these reads its configuration once
+    # at import. config holds the secret; auth binds it by value with a `from ... import`,
+    # so reloading auth alone would re-bind whatever config still had - the value left by
+    # whichever test file imported it first, which made this file pass alone and fail
+    # alongside test_session.
     import osw_chatbot.auth as auth_module
+    import osw_chatbot.config as config_module
     import osw_chatbot.llmproxy.app as module
 
+    importlib.reload(config_module)
     importlib.reload(auth_module)
     module = importlib.reload(module)
 

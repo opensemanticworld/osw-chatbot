@@ -26,6 +26,8 @@ if not os.environ.get("CHATBOT_SHARED_SECRET"):
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from osw_chatbot import auth  # noqa: E402
 
+#: Tools a default session must always offer. Not exhaustive - the sandbox set appears
+#: only when the wiki grants 'code-sandbox', and is checked separately.
 EXPECTED_TOOLS = [
     "multiply",
     "where_am_i",
@@ -120,7 +122,12 @@ def session():
 
 def test_the_llm_sees_the_same_tools_as_before(session):
     names = [t.name for t in session.tools]
-    assert names[: len(EXPECTED_TOOLS)] == EXPECTED_TOOLS
+    # Presence, not order. A tool silently disappearing is the failure worth catching -
+    # it leaves the model unable to do something it was told it could. Where it sits in
+    # the list is not a contract, and asserting it turned every registration into a
+    # test edit.
+    missing = [name for name in EXPECTED_TOOLS if name not in names]
+    assert not missing, f"tools the model can no longer see: {missing}"
     for tool in session.tools:
         assert tool.description, f"{tool.name} lost its docstring"
 
