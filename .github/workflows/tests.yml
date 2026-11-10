@@ -39,7 +39,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: opensemanticworld/mediawiki-extensions-Chatbot
-          ref: main
+          # The branch carrying the matching client half, not main - main predates the
+          # sandbox tools entirely and has none of their handlers. Move this to `main`
+          # once mediawiki-extensions-Chatbot#4 is merged.
+          ref: feat-skill-sandbox
           path: .ci/Chatbot
 
       - name: Install uv
