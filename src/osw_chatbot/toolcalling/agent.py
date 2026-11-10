@@ -22,6 +22,7 @@ from osw_chatbot.config import (
     SKILL_DEFAULT_DATA,
     SKILL_DISCOVERY_QUERY,
     MAX_TOOL_RESULT_CHARS,
+    OPAQUE_MIME_PREFIXES,
     CONFIRM_TIMEOUT,
     PARENT_ORIGINS,
 )
@@ -101,10 +102,6 @@ def uuid_from_osw_id(osw_id: str) -> str:
     return str(uuid.UUID(osw_id))
 
 
-# Category:Skill - instances are assistant skills authored on the wiki. A subclass of
-# Category:Tutorial, so querying Tutorial would return fifty pages that are not skills.
-
-
 #: Slots the wiki owns. 'header' and 'footer' always carry the default entity invokes and
 #: nothing else; writing them replaces the rendering machinery on every page that uses
 #: them. Content for one page belongs in 'main'; content for every instance of a category
@@ -175,6 +172,50 @@ def as_text(output) -> str:
                 parts.append(str(block))
         return "".join(parts)
     return "" if output is None else str(output)
+
+
+#: Per-string bound inside a sandbox result. Generous enough for real output - a dataframe
+#: head, a long log - and far below a base64 image, which is the thing worth stopping.
+_MAX_SANDBOX_STRING = 10_000
+
+
+def _without_binary_payloads(value):
+    """Replace binary cell outputs with a note that one was produced.
+
+    A notebook that draws a plot returns the PNG inline, base64 encoded. One 600x400
+    matplotlib figure is ~45 000 characters - about 11 000 tokens - and the model cannot
+    see it as an image, so every one of them is noise that it pays for again on each
+    following turn, because the scratchpad replays the whole exchange. Three plots in one
+    session measured 110 662 characters.
+
+    `MAX_TOOL_RESULT_CHARS` does not catch this: at 120 000 the blob is comfortably under
+    the cap, so nothing trims it. The problem is not that the result is too long, it is
+    that this part of it carries no information for the reader.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                f"<{key}, {len(val)} characters, rendered in the sandbox>"
+                if isinstance(key, str)
+                and key.startswith(OPAQUE_MIME_PREFIXES)
+                and isinstance(val, str)
+                else _without_binary_payloads(val)
+            )
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_without_binary_payloads(item) for item in value]
+    if isinstance(value, str) and len(value) > _MAX_SANDBOX_STRING:
+        # Stripping mime bundles is not enough on its own: a stream output is
+        # {'output_type': 'stream', 'text': ...}, so code that prints base64 - which is
+        # what the model falls back to when it has no file tools - carries the whole
+        # image through as ordinary stdout.
+        return (
+            value[:_MAX_SANDBOX_STRING]
+            + f"\n... truncated, {len(value)} characters in total. Re-run printing only "
+            "the part you need - the sandbox still holds the whole thing."
+        )
+    return value
 
 
 def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -313,6 +354,7 @@ SYSTEM_TEXT = (
     "This wiki stores things as structured entities, so create a device, event, person, project or sample as an instance of its category (find it with 'find_page_from_topic', read it with 'get_category_schema'), never as a plain wikitext page. The exceptions are the user's own 'User:<name>/...' subpages, '.js' and '.css' pages, and the main page."
     "Never invent an OSW-ID. Every new entity gets its title from the 'new_osw_id' tool, used exactly as returned - OSW-IDs must be random and globally unique, and a made up one collides with other wikis or points at nothing."
     "Report what actually happened: only call a page created, saved or deleted when the tool returned success. If a tool reported an error or a timeout, say exactly that - a timed out write may or may not have gone through, so re-read the page and tell the user what you found instead of retrying blindly or claiming it worked."
+    "A tool returning without an error is not evidence that the thing happened. Read what it actually returned before reporting anything: a cell can run to completion and produce nothing, a query can succeed and match zero rows, an upload can report a result that carries no page title, and an error can arrive as ordinary text inside an otherwise successful output. Look for the evidence that fits the task - rows, printed values, a title, a revision - and if it is absent, say so and investigate rather than describing what you expected to happen. Where you have not checked, say that plainly instead of implying you did."
 )
 
 
@@ -749,8 +791,9 @@ class ChatSession:
                                 + org_prompt
                             )
                             prompt += res["output"]
-                        except Exception as e:
-                            print(e)
+                        except Exception as e:  # noqa: BLE001
+                            print(f"osw-chatbot: could not prefill from the schema ({e})",
+                                  flush=True)
                     jsonschema = await session.call_client_side_tool(
                         "get_category_schema", [category_page]
                     )
@@ -759,12 +802,12 @@ class ChatSession:
                         get_llm_response, prompt, jsonschema, None, None, False
                     )
                     default_data = default_data_res["result"]
-                    print("DESCRIPTION", instance_description, "DATA", default_data)
                     default_data, unresolved = await session._resolve_references(
                         default_data, jsonschema
                     )
-                except Exception as e:
-                    print(e)
+                except Exception as e:  # noqa: BLE001
+                    print(f"osw-chatbot: could not resolve the instance defaults ({e})",
+                          flush=True)
             opened = await session.call_client_side_tool(
                 "create_category_instance", [category_page, default_data]
             )
@@ -867,12 +910,6 @@ class ChatSession:
             Scripts (.js/.css) may only be written inside the current user's own space, i.e. 'User:<name>/...'.
             Returns {'ok': true, 'title', 'created'} or raises with the reason the wiki refused.
             """
-            needed = required_skill(title)
-            if needed in session.skills and needed not in session.loaded_skills:
-                raise ToolRefusal(
-                    f"read the '{needed}' skill before writing this page: call "
-                    f"load_skill('{needed}'), follow it, then make this edit again"
-                )
             # Models regularly hand the whole slot map over as a JSON string.
             # Accepting it is cheaper than a failed turn: a pydantic
             # ValidationError is not a ToolException, so it bypasses
@@ -890,19 +927,62 @@ class ChatSession:
                     "'slots' must be an object mapping slot name to content, "
                     f"got {type(slots).__name__}"
                 )
-            # Instantiating a category means following that category's conventions, and
-            # the wiki is where they are written down. Checked before the write, not
-            # after, because the point is to shape what gets written.
+            # What has to be read before this page can be written, as one answer.
+            #
+            # Two things decide it: the kind of page (a .js page needs the component
+            # skill, an entity needs the page conventions) and the categories it
+            # instantiates, since instantiating a category means following that
+            # category's conventions and the wiki is where those are written down.
+            #
+            # Collected together rather than enforced separately. They used to raise one
+            # at a time, from two places with two different wordings, so a single edit
+            # produced "read the 'osl-page-editing' skill" and then, a turn later,
+            # "'Category:X' has a skill that has to be read first" - which reads as the
+            # only requirement, and makes the first one look as though it was never
+            # asked for. Checked before the write, because the point is to shape what
+            # gets written.
+            missing, gated = [], []
+            needed = required_skill(title)
+            if needed in session.skills and needed not in session.loaded_skills:
+                missing.append(needed)
             for category in (slots.get("jsondata") or {}).get("type") or []:
                 if not isinstance(category, str):
                     continue
                 for required in await session.skills_for_category(category):
-                    if required not in session.loaded_skills:
-                        raise ToolRefusal(
-                            f"'{category}' has a skill on this wiki that has to be read "
-                            f"first: call load_skill('{required}'), follow it, then make "
-                            "this edit again"
-                        )
+                    if required in session.loaded_skills or required in missing:
+                        continue
+                    missing.append(required)
+                    if category not in gated:
+                        gated.append(category)
+            if missing:
+                calls = ", ".join(f"load_skill('{name}')" for name in missing)
+                # Naming the categories only when some are involved: a .js page is gated
+                # by what it is, not by anything it instantiates, and "'' has
+                # conventions" would be a puzzle rather than a hint.
+                because = (
+                    " - "
+                    + ", ".join(repr(c) for c in gated)
+                    + (
+                        " has conventions of its own"
+                        if len(gated) == 1
+                        else " have conventions of their own"
+                    )
+                    if gated
+                    else ""
+                )
+                raise ToolRefusal(
+                    "this page cannot be written until its conventions have been read"
+                    + because
+                    + ". Call "
+                    + calls
+                    + (
+                        " - in that order, general conventions before category specific"
+                        " ones - and follow them"
+                        if len(missing) > 1
+                        else ", follow it"
+                    )
+                    + ", then make this edit again"
+                )
 
             managed = sorted(MANAGED_SLOTS.intersection(slots))
             if managed:
@@ -1003,7 +1083,9 @@ class ChatSession:
 
             if not (code or "").strip():
                 raise ToolRefusal("'code' is empty")
-            return await session.call_client_side_tool("run_in_sandbox", [code])
+            return _without_binary_payloads(
+                await session.call_client_side_tool("run_in_sandbox", [code])
+            )
 
         @langchain_core.tools.tool
         async def sandbox_status() -> dict:
@@ -1018,13 +1100,18 @@ class ChatSession:
         # what keeps `filebrowser:open-url` - and the `?fromURL=` allowlist it would walk
         # around - out of reach.
         async def lab(command: str, **kwargs) -> dict:
-            return await session.call_client_side_tool(
-                "sandbox_command", [f"jupyterlab-ai-commands:{command}", kwargs]
+            # Every lab command funnels through here, so the binary strip happens once.
+            return _without_binary_payloads(
+                await session.call_client_side_tool(
+                    "sandbox_command", [f"jupyterlab-ai-commands:{command}", kwargs]
+                )
             )
 
         @langchain_core.tools.tool
         async def kernel_start() -> dict:
-            """Starts a Python kernel in the sandbox and returns its 'kernelId'. Use the id for 'kernel_execute'. A kernel keeps its variables between calls, so start one and reuse it rather than starting a fresh one per snippet."""
+            """Starts a Python kernel in the sandbox and returns its 'kernelId'. Use the id for 'kernel_execute'. A kernel keeps its variables between calls, so start one and reuse it rather than starting a fresh one per snippet.
+
+            Call 'kernel_list' first and reuse what is there. Each kernel is a full Python runtime in the user's browser, and they are not cleaned up on their own - five accumulated in one session here. If you do start one for a one-off task, shut it down with 'kernel_shutdown' when you are finished with it."""
 
             return await lab("start-kernel")
 
@@ -1039,6 +1126,8 @@ class ChatSession:
             """Runs Python in a kernel and returns its actual output. Nothing is written into a notebook, so this is the right tool for working something out - a lookup, a calculation, a check - where the user does not need the code afterwards.
 
             Returns 'outputs' with what the code printed or evaluated, plus 'errorName' and 'traceback' when it raised. Use 'notebook_add_cell' and 'notebook_run_cell' instead when the user should keep the code.
+
+            This is the same kernel the notebook runs in - one namespace, one execution counter - so code here sees what notebook cells defined, and the other way round. A NameError for something defined earlier means the kernel was restarted, which a page reload does; re-run the setup cells rather than concluding the two do not share state.
 
             The kernel is in the browser: it can reach this wiki and CORS-enabled APIs, not the open web. Fetch pages with your own web tools and pass the data in."""
 
@@ -1091,16 +1180,18 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def save_notebook_to_wiki(
-            filename: str = "", comment: str = ""
+            label: str = "", comment: str = ""
         ) -> dict:
-            """Uploads the sandbox's open notebook to the wiki as a file, so it outlives the session. Returns its 'title', e.g. 'File:OSW....ipynb'.
+            """Uploads the sandbox's open notebook to the wiki as a WikiFile, so it outlives the session. Returns its 'title', e.g. 'File:OSW....ipynb'.
+
+            'label' is what a reader sees - "EMMC events", not a filename. The page itself is named by OSW-ID, because that is how this wiki identifies an entity; do not pass a title or try to choose one.
 
             The sandbox's own storage is the browser's and does not survive clearing site data, so offer this whenever the user has code worth keeping. Afterwards tell them the notebook can be reopened at any time from that file page, or by passing the title to 'open_sandbox' - they do not have to ask you to rebuild it.
 
-            'filename' should end in .ipynb and describe the contents; the user confirms the upload."""
+            The user confirms the upload."""
 
             result = await session.call_client_side_tool(
-                "save_notebook_to_wiki", [filename, comment]
+                "save_notebook_to_wiki", [label, comment]
             )
             # A dict saying ok:false is something the model reads past and then reports
             # as done, inventing a plausible File: title. This claim is durable - the
@@ -1125,6 +1216,85 @@ class ChatSession:
             """Saves the notebook to the sandbox's own storage. That storage is the browser's, so it does not survive clearing site data - offer to upload the notebook to the wiki for anything worth keeping."""
 
             return await lab("save-notebook", notebookPath=notebook_path)
+
+        # Moving files between the sandbox and the wiki, both ways.
+        #
+        # Not left to ad-hoc kernel code. Code can do it - osw-python is right there - but
+        # it reaches api.php directly, so none of the rules this extension enforces apply:
+        # the page gets whatever name the code chose and no jsondata, which is exactly how
+        # `File:Emmc_events.ipynb` happened. It also costs the user a confirmation prompt
+        # on Python they did not want to read.
+        @langchain_core.tools.tool
+        async def push_file_to_osw(
+            path: str, label: str = "", comment: str = ""
+        ) -> dict:
+            """Uploads a file from the sandbox to this wiki as a WikiFile, so it outlives the browser. Returns its 'title', e.g. 'File:OSW....csv'. The user confirms first.
+
+            'path' is the file inside the sandbox ('results.csv', 'figures/plot.png'); 'label' is what a reader should see. The page is named by OSW-ID - never pick the page name yourself, and never write code that uploads instead, which would skip the naming and the entity data that make the file findable.
+
+            Use 'save_notebook_to_wiki' for the open notebook; it saves it first."""
+
+            if not (path or "").strip():
+                raise ToolRefusal("'path' is empty - name the file in the sandbox")
+            result = await session.call_client_side_tool(
+                "push_file_to_osw", [path, label, comment]
+            )
+            title = (result or {}).get("title")
+            if not title:
+                raise ToolRefusal(
+                    "the file was not uploaded: "
+                    + str((result or {}).get("message") or (result or {}).get("error") or result)
+                    + ". Do not tell the user it was uploaded, and do not invent a "
+                    "File: title."
+                )
+            return result
+
+        @langchain_core.tools.tool
+        async def pull_file_from_osw(title: str, path: str = "") -> dict:
+            """Copies a file from this wiki into the sandbox so code can read it. 'title' is a 'File:...' page; 'path' is where to put it, defaulting to the wiki's own file name.
+
+            Use it instead of writing Python that downloads the file: this runs as the user, checks the page is really an uploaded file on this wiki, and handles binary content without routing it through the conversation."""
+
+            if not (title or "").strip():
+                raise ToolRefusal("'title' is empty - name a 'File:...' page")
+            result = await session.call_client_side_tool(
+                "pull_file_from_osw", [title, path]
+            )
+            if not (result or {}).get("ok"):
+                raise ToolRefusal(
+                    "the file was not copied into the sandbox: "
+                    + str((result or {}).get("message") or (result or {}).get("error") or result)
+                )
+            return result
+
+        # The whole lab surface, without a wrapper per command.
+        #
+        # Hand-written wrappers drift: the deployed build offers 23 commands and chat
+        # could reach 11, because nobody added the rest. These two ask the running lab
+        # what it can do, so a command added upstream is available here with no change -
+        # and the schemas come from the same `describedBy` the in-lab agent reads, so
+        # both agents describe the sandbox the same way.
+        @langchain_core.tools.tool
+        async def discover_commands() -> dict:
+            """Lists everything the sandbox can be asked to do, with the arguments each one takes. Returns {'commands': [{'command', 'label', 'caption', 'args'}]}, where 'args' is a JSON schema.
+
+            Call it before 'execute_command' rather than guessing a command name, and whenever a task needs something the named tools do not cover - files, cells, kernels. The named tools ('notebook_run_cell', 'kernel_execute' and the rest) are shortcuts for the common ones; this is the full set the installed sandbox provides."""
+
+            return await session.call_client_side_tool("discover_commands", [])
+
+        @langchain_core.tools.tool
+        async def execute_command(command: str, arguments: dict = None) -> dict:
+            """Runs one sandbox command. 'command' is an id from 'discover_commands' - pass it exactly as listed, including the 'jupyterlab-ai-commands:' prefix - and 'arguments' matches the 'args' schema that command reported.
+
+            Anything that runs code or deletes something asks the user first, so a refusal here is their answer and not a fault to work around. Nothing outside the sandbox's own command namespace can be called."""
+
+            # Not named `args`: langchain mangles a tool parameter called `args` into
+            # `v__args` when it builds the schema, and the call then arrives with a
+            # keyword the function does not take. It fails only through the agent, so a
+            # direct call to the coroutine looks fine.
+            return await session.call_client_side_tool(
+                "sandbox_command", [command, arguments or {}]
+            )
 
         @langchain_core.tools.tool
         async def load_skill(name: str) -> str:
@@ -1162,30 +1332,40 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def discover_skills(query: str = "") -> List[Dict[str, str]]:
-            """Lists the skills available on this wiki, written by its editors. Returns a list of {name, description, title}; pass a name to 'load_skill' to read one.
+            """Lists every skill available here: the ones this wiki holds, written by its editors, and the ones that ship with the assistant. Returns a list of {name, description, title}; pass a name to 'load_skill' to read one. A 'title' means the skill lives on the wiki.
 
             Use it when a task looks wiki-specific and nothing in the system prompt covers it: local conventions, a house style for a category, a procedure this site follows. 'query' narrows by substring over names and descriptions; leave it empty to see everything."""
 
             found = await session.list_wiki_skills(query)
-            if found:
-                return found
 
-            # A wiki that holds no skills yet should still get the ones shipped here,
-            # rather than an empty list that reads as "this wiki has no conventions".
+            # Merged by name, not replaced wholesale. A wiki skill supersedes the shipped
+            # copy it was migrated from - the wiki is the source of truth for anything the
+            # wiki describes - but a shipped skill with no counterpart has to survive, or
+            # it disappears the moment the wiki gains its first skill of any kind.
+            #
+            # That is not hypothetical: 'sandbox' describes a backend capability rather
+            # than a wiki convention, so it was deliberately never migrated. Under
+            # all-or-nothing it vanished from this listing, and the assistant answered
+            # "I only have access to two skills" while holding three.
+            from_wiki = {s["name"] for s in found}
             needle = (query or "").strip().lower()
-            return [
+            shipped = [
                 {"name": s.name, "description": s.description, "title": ""}
                 for s in session.skills.values()
-                if not needle
-                or needle in s.name.lower()
-                or needle in s.description.lower()
+                if s.name not in from_wiki
+                and (
+                    not needle
+                    or needle in s.name.lower()
+                    or needle in s.description.lower()
+                )
             ]
+            return found + shipped
 
         @langchain_core.tools.tool
         async def save_skill(
             name: str, description: str, instructions: str, title: str = ""
         ) -> dict:
-            """Writes a skill to the wiki as an instance of Category:Skill, so it is available to this assistant and to the notebook agent from now on. Opens a confirmation first - it is a wiki edit, made in the user's name.
+            """Writes a skill to the wiki, so it is available to this assistant and to the notebook agent from now on. It is saved as an ordinary page of the wiki's skill category, tagged with the AI Skill keyword - the keyword is what makes a page a skill, not the category. Opens a confirmation first - it is a wiki edit, made in the user's name.
 
             'name' is a slug the skill is called by, lower case with hyphens, e.g. 'tensile-test-reporting'. 'description' is the single line every assistant sees for this skill on every turn, so say *when* to reach for it, not what it contains. 'instructions' is the body, in markdown. Pass 'title' to update an existing skill page; leave it empty to create one.
 
@@ -1237,6 +1417,8 @@ class ChatSession:
                 kernel_start, kernel_list, kernel_execute, kernel_shutdown,
                 notebook_info, notebook_add_cell, notebook_run_cell,
                 notebook_delete_cell, notebook_save, save_notebook_to_wiki,
+                discover_commands, execute_command,
+                push_file_to_osw, pull_file_from_osw,
             ]
         # load_skill is registered whenever *any* source of skills exists. The wiki's own
         # are discovered at call time, so the bundled ones being empty does not mean there
@@ -1287,7 +1469,7 @@ class ChatSession:
         return prefill.prune_empty(data), unresolved
 
     async def _wiki_skill_pages(self, refresh=False):
-        """Every Category:Skill page on this wiki, as {name: {...}}.
+        """Every skill page on this wiki, as {name: {...}}.
 
         Read through the browser, not from here: this process holds no wiki credential by
         design, and on a wiki that denies anonymous reads - the dev wiki does - a
@@ -1412,8 +1594,12 @@ class ChatSession:
 
         A skill on a supercategory covers its subcategories - a convention for "Device"
         applies to every kind of device - so the whole chain is considered. Prerequisites
-        are pulled in transitively, nearest requirement last so the chain reads in the
-        order it should be followed.
+        are pulled in transitively.
+
+        Ordered general first, category specific last: the conventions for writing any
+        entity are what the specific skill assumes you already know, so reading them the
+        other way round means reading the exception before the rule. `_superclasses`
+        returns nearest first, so the walk goes the other way.
         """
         skills = await self._wiki_skill_pages()
         if not any(s.get("related_to") for s in skills.values()):
@@ -1434,11 +1620,24 @@ class ChatSession:
             seen.add(skill["name"])
             for predecessor in skill.get("required_predecessors") or []:
                 earlier = by_title.get(predecessor)
-                if earlier is not None:
-                    pull(earlier)
+                if earlier is None:
+                    # A prerequisite only counts if it is a skill itself: the gate's
+                    # remedy is load_skill(), which has nothing to load otherwise.
+                    # Said out loud, because the page looks gated either way - the
+                    # author sees `required_predecessor` set and has no way to tell it
+                    # is being ignored. The fix is on the wiki: give that page the AI
+                    # Skill keyword.
+                    print(
+                        f"osw-chatbot: {skill['title']} requires {predecessor} first, "
+                        "but that page is not a skill on this wiki - the prerequisite "
+                        "is not enforced. Add the AI Skill keyword to it.",
+                        flush=True,
+                    )
+                    continue
+                pull(earlier)
             matched.append(skill["name"])
 
-        for target in chain:
+        for target in reversed(chain):
             for skill in skills.values():
                 if target in (skill.get("related_to") or []):
                     pull(skill)
@@ -1463,7 +1662,7 @@ class ChatSession:
         return skill["body"] if skill else None
 
     async def save_wiki_skill(self, name, description, instructions, title=None):
-        """Create or update a Category:Skill page, through the usual write path.
+        """Create or update a skill page, through the usual write path.
 
         Routed through `edit_page` rather than a new browser tool so it inherits
         everything that already guards a write: the confirmation dialog, the action gate,

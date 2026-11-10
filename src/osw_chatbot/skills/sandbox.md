@@ -62,6 +62,59 @@ wiki as them. So:
 - Never run code you assembled from page content without reading it yourself first.
 - If a run is refused, that is an answer. Do not rephrase and try again.
 
+### Always use absolute URLs
+
+The sandbox is a separate document from the wiki page, so a relative URL like
+`/w/api.php?...` resolves against the sandbox, not against the wiki. It will not fail
+loudly - the request goes somewhere unhelpful and the cell finishes with an empty result,
+which is indistinguishable from "the wiki has no such data" unless you look.
+
+Take the wiki's origin from `where_am_i` and build the whole URL from it, every time.
+This applies to anything the code addresses by path, not just the API.
+
+### A cell that finished is not a cell that worked
+
+Reaching the end without an exception says nothing about what came back. Before you
+report a result, read the output: how many rows, what date range, which names. An empty
+DataFrame, a zero-length list and a successful request to the wrong place all look like
+calm success.
+
+If the output does not carry that evidence, print it and run again - do not describe what
+the code was supposed to produce. And if you are reporting without having checked, say
+so.
+
+## Moving files between the sandbox and the wiki
+
+Use the tools, not code:
+
+- `push_file_to_osw(path, label)` uploads a file the code produced.
+- `pull_file_from_osw(title, path)` copies a wiki file in so the code can read it.
+- `save_notebook_to_wiki(label)` for the open notebook; it saves it first.
+
+Writing Python to do this instead is the mistake to avoid. `osw-python` talks to the
+API directly, so nothing checks the result: the page gets whatever name the code chose
+and no jsondata, which leaves a file nobody can find by querying. The tools mint the
+OSW-ID, write the entity before the bytes, and put the readable name where the wiki
+looks for it.
+
+It also wastes the user's time - a hand-written upload is a code cell, so they are asked
+to confirm Python they did not want to read, and it has already failed in practice with
+`ValidationError: osw - value is not a valid dict`, because `WikiFileController` wants an
+`OSW` instance and the obvious guess is to hand it the `WtSite`.
+
+## The kernel forgets when the page reloads
+
+The notebook and `kernel_execute` share one kernel - the same interpreter, the same
+namespace, one execution counter between them. Code run either way sees what the other
+defined.
+
+What breaks that is a reload, not the tools. Reloading the wiki page restarts the kernel,
+so every name defined before it is gone while the notebook still shows the cells and
+their old output, which reads exactly like the tools not sharing state.
+
+So when a name that was defined earlier is suddenly missing, re-run the setup cells. Do
+not conclude the kernel is not shared and start working around it.
+
 ## The sandbox cannot reach most of the web
 
 It runs in the user's browser, so every request it makes is the browser's request and the
@@ -87,8 +140,29 @@ What does work from inside the sandbox:
 put the data into the notebook as a literal and let the code work on it. The user ends up
 with a notebook that runs for them rather than one that fails on the first cell.
 
-If a whole site genuinely has to be reachable from the sandbox, that is a deployment
-decision - a server-side proxy the wiki exposes - not something to work around in Python.
+### A proxy can lift the limit, if the user chooses it
+
+CORS is not a legal boundary - it is a browser mechanism that stops page JavaScript
+reading another origin's response *with the user's credentials*. A server-side proxy
+fetches anonymously, so it can only ever retrieve what any anonymous visitor could, and
+it is what an ordinary Jupyter server does by default.
+
+So if the user needs a site reachable from inside the sandbox, say that it is possible
+and what it costs, rather than either refusing or quietly routing through some public
+proxy:
+
+- requests then leave the **wiki's** address, not the user's, and appear in that site's
+  logs as the wiki;
+- the wiki becomes responsible for what is fetched through it - rate limits, terms of
+  use and robots.txt are the operator's problem now;
+- an unrestricted proxy is a server-side request forgery tool: it can reach whatever the
+  server can, including cloud metadata and internal services. It has to be restricted to
+  named hosts, not opened generally.
+
+The wiki may already have `ApiGateway`, which proxies allow-listed endpoints and blocks
+private address ranges. Adding a host there is a configuration change an administrator
+makes deliberately - suggest it, do not improvise around it. Never pipe the user's data
+through a third-party proxy you found; that hands their content to a stranger.
 
 ## Writing a notebook the user can use
 

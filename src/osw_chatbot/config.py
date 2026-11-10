@@ -154,3 +154,12 @@ SKILL_DEFAULT_DATA = json.loads(
 SKILL_DISCOVERY_QUERY = os.getenv(
     "SKILL_DISCOVERY_QUERY", f"[[HasKeyword::{AI_SKILL_KEYWORD}]]"
 )
+
+
+#: Cell output a text model cannot read. `text/plain` is deliberately absent: matplotlib
+#: puts "<Figure size 600x400 with 1 Axes>" there, which is the half worth keeping.
+#:
+#: Shared so the two sides agree. The agent strips these from a result; the progress line
+#: counts them to say "a figure was drawn". When only one of them knew about PDFs, a cell
+#: emitting one had its payload stripped and was then described as "no output".
+OPAQUE_MIME_PREFIXES = ("image/", "application/pdf", "video/", "audio/")
