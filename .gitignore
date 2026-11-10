@@ -5,3 +5,4 @@ docker-compose.override.yml
 *.log
 *_cache.db
 scratch/
+.env.bak*
