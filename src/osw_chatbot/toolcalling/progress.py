@@ -4,14 +4,18 @@ A turn that searches, reads three pages and writes one looks exactly like a
 turn that does nothing: a spinner. This maps LangChain's tool callbacks onto
 Panel chat steps, one compact line per call.
 
-Arguments are deliberately summarised rather than shown: `where_am_i` carries
-the whole DOM and `get_page_content` returns kilobytes, none of which belongs
-in the transcript.
+The step *title* carries a summary rather than the call itself: `where_am_i`
+carries the whole DOM and `get_page_content` returns kilobytes, none of which
+belongs in a one-line header. Expanding a step shows the summary, then the
+arguments and the result as JSON, clipped - enough to see what was actually
+asked and answered without the transcript becoming the payload.
 """
 
 import json
 
 from langchain_core.callbacks import AsyncCallbackHandler
+
+from osw_chatbot.config import OPAQUE_MIME_PREFIXES
 
 MAX_ARG = 60
 
@@ -38,7 +42,6 @@ LABELS = {
     "get_category_schema": ("Reading the schema of {arg}", "Read the schema of {arg}"),
     "smw_ask_query": ("Querying the wiki", "Queried the wiki"),
     "new_osw_id": ("Reserving an ID", "Reserved an ID"),
-    "get_file_text": ("Reading the file {arg}", "Read the file {arg}"),
     "get_file_content": ("Reading the file {arg}", "Read the file {arg}"),
     "edit_page": ("Writing {arg}", "Wrote {arg}"),
     "delete_page": ("Deleting {arg}", "Deleted {arg}"),
@@ -113,6 +116,10 @@ STEP_CSS = """
 
 MAX_DETAIL = 180
 
+#: Per block, in the expanded body. Room for a real call without the step becoming a
+#: wall of text in a ~210px panel - and `where_am_i` would otherwise paste a whole DOM.
+MAX_JSON = 700
+
 
 def _clip(items, limit=4):
     items = [str(i) for i in items if i]
@@ -166,6 +173,67 @@ def _schema_properties(schema, seen=None):
     return names
 
 
+def _cell_output(output) -> str:
+    """What a cell actually produced: printed text, a result, or the error.
+
+    The most useful thing a step can show and the one that was missing - expanding
+    "Ran a notebook cell" said "done", when the user wanted the number it printed or
+    the exception it raised.
+    """
+    if not isinstance(output, dict):
+        return ""
+    if output.get("error"):
+        return str(output["error"])
+
+    parts, opaque = [], []
+    for item in output.get("outputs") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("output_type")
+        if kind == "error":
+            name = str(item.get("ename") or "Error").strip("<>'\" class")
+            return f"{name}: {item.get('evalue') or ''}".strip()
+        if kind == "stream":
+            parts.append(str(item.get("text") or ""))
+        else:
+            data = item.get("data") or {}
+            opaque += [
+                str(k) for k in data if str(k).startswith(OPAQUE_MIME_PREFIXES)
+            ]
+            if data.get("text/plain"):
+                parts.append(str(data["text/plain"]))
+
+    text = " ".join(" ".join(parts).split())
+    if opaque:
+        # "figure" only when it really is one: a cell can emit a pdf or audio, and
+        # calling that a figure is the kind of small lie that costs trust in the rest.
+        if all(m.startswith("image/") for m in opaque):
+            made = f"{len(opaque)} figure{'s' if len(opaque) > 1 else ''} drawn"
+        else:
+            made = ", ".join(sorted(set(opaque))) + " produced"
+        return f"{made} - {text}" if text else made
+    if text:
+        return text
+    if output.get("success") is False or output.get("status") == "error":
+        return str(output.get("message") or "failed")
+    return "no output"
+
+
+def _file_result(output) -> str:
+    """A wiki file, named the way a reader sees it rather than by its OSW-ID alone."""
+    if not isinstance(output, dict):
+        return ""
+    title = output.get("title") or ""
+    label = output.get("label") or ""
+    size = output.get("size")
+    bits = [named(title, label)] if title else []
+    if output.get("path"):
+        bits.append(f"as {output['path']}")
+    if isinstance(size, int):
+        bits.append(f"{size // 1024} KB" if size >= 1024 else f"{size} bytes")
+    return " ".join(bits)
+
+
 def describe(name, output) -> str:
     """What a tool returned, in one useful line.
 
@@ -177,15 +245,73 @@ def describe(name, output) -> str:
         detail = _describe(name, output)
     except Exception:  # noqa: BLE001 - a summary must never break a turn
         detail = ""
-    if not detail:
+    # "None" is what a per-tool case produces when the field it reads is absent - a
+    # shape change upstream, not something to show a user.
+    if not detail or str(detail).strip() in {"None", "none"}:
         detail = "done"
     return detail[: MAX_DETAIL - 1] + "…" if len(detail) > MAX_DETAIL else detail
 
 
 def _describe(name, output):
-    # the write tools report refusals as data
-    if isinstance(output, dict) and output.get("ok") is False:
-        return str(output.get("message") or output.get("code") or "failed")
+    # the write tools report refusals as data; the lab bridge uses a bare `error`
+    if isinstance(output, dict) and (output.get("ok") is False or "error" in output):
+        return str(
+            output.get("message") or output.get("error") or output.get("code") or "failed"
+        )
+
+    # Anything that runs code: show what it produced.
+    if name in {"notebook_run_cell", "kernel_execute"}:
+        return _cell_output(output)
+
+    if name in {"save_notebook_to_wiki", "push_file_to_osw", "upload_file"}:
+        return _file_result(output) or "uploaded"
+
+    if name == "pull_file_from_osw":
+        out = output if isinstance(output, dict) else {}
+        return _file_result(out) or "copied into the sandbox"
+
+    if name == "edit_page":
+        out = output if isinstance(output, dict) else {}
+        title = named(out.get("title") or "", out.get("label"))
+        what = "created" if out.get("created") else "updated"
+        slots = ", ".join(out.get("slots") or [])
+        return f"{what} {title}" + (f" - {slots}" if slots else "")
+
+    if name == "delete_page":
+        out = output if isinstance(output, dict) else {}
+        return f"deleted {short_id(out.get('title') or '')}".strip()
+
+    if name == "notebook_info":
+        out = output if isinstance(output, dict) else {}
+        cells = out.get("cellCount")
+        path = out.get("notebookPath") or out.get("notebookName") or ""
+        return f"{path} - {cells} cells" if cells is not None else str(path or "")
+
+    if name == "notebook_add_cell":
+        out = output if isinstance(output, dict) else {}
+        return str(out.get("message") or out.get("cellId") or "added")
+
+    if name in {"kernel_list", "kernel_start"}:
+        out = output if isinstance(output, dict) else {}
+        kernels = out.get("kernels") or []
+        if kernels:
+            # A kernel id is a bare uuid - short_id only trims OSW-prefixed titles, so
+            # the whole 36 characters would land in a 210px step line.
+            return _clip([str(k.get("id", ""))[:8] + "…" for k in kernels])
+        return str(out.get("kernelId") or out.get("message") or "no kernel")
+
+    if name == "discover_commands":
+        out = output if isinstance(output, dict) else {}
+        return f"{out.get('count', 0)} things the sandbox can do"
+
+    if name == "execute_command":
+        out = output if isinstance(output, dict) else {}
+        return _cell_output(out) if out.get("outputs") else str(
+            out.get("message") or "done"
+        )
+
+    if name == "new_osw_id":
+        return short_id(str(output or ""))
 
     if name == "discover_skills":
         if not output:
@@ -288,6 +414,29 @@ def _describe(name, output):
     return text
 
 
+def as_json(value) -> str:
+    """A tool's arguments or result, readable and clipped.
+
+    `default=str` because a result can hold anything a tool chose to return, and a step
+    that raised TypeError while rendering would lose the call it was describing.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        # Tools are called with a JSON string as often as with a dict; showing it parsed
+        # is the difference between a readable block and one long line.
+        try:
+            text = json.dumps(json.loads(text), indent=1, ensure_ascii=False)
+        except ValueError:
+            pass
+    else:
+        try:
+            text = json.dumps(value, indent=1, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
+    text = text.strip()
+    return text[: MAX_JSON - 1] + "…" if len(text) > MAX_JSON else text
+
+
 class ToolProgressHandler(AsyncCallbackHandler):
     """Renders one collapsed chat step per tool call."""
 
@@ -329,29 +478,55 @@ class ToolProgressHandler(AsyncCallbackHandler):
         except Exception as e:  # noqa: BLE001 - progress must never break a turn
             print(f"osw-chatbot: could not add a progress step ({e})")
             return
-        # the name is only known here, but the summary needs it at the end
-        self._steps[run_id] = (step, name)
+        # the name is only known here, and the end needs both it and the arguments
+        self._steps[run_id] = (step, name, kwargs.get("inputs") or input_str)
 
     async def on_tool_end(self, output, *, run_id=None, **kwargs):
-        step, name = self._steps.pop(run_id, (None, ""))
+        step, name, args = self._steps.pop(run_id, (None, "", None))
         if step is None:
             return
         # A refused write comes back as an observation rather than an error,
         # so look for it here too - otherwise a failure renders as success.
+        #
+        # Three shapes mean failure, because three layers report it differently: the
+        # write tools return `ok: False`, the lab bridge returns a bare `{error: ...}`,
+        # and a refusal arrives as text. Checking only the first two left a failed
+        # upload wearing a green tick while the model was correctly telling the user it
+        # had failed.
         text = str(output)
-        failed = text.startswith("Error:") or "do not have permission" in text
-        self._fin(step, "failed" if failed else "success", describe(name, output))
+        failed = (
+            text.startswith("Error:")
+            or "do not have permission" in text
+            or (
+                isinstance(output, dict)
+                and (output.get("ok") is False or "error" in output)
+            )
+        )
+        self._fin(
+            step,
+            "failed" if failed else "success",
+            describe(name, output),
+            args,
+            output,
+        )
 
     async def on_tool_error(self, error, *, run_id=None, **kwargs):
-        step, _ = self._steps.pop(run_id, (None, ""))
+        step, _, args = self._steps.pop(run_id, (None, "", None))
         if step is not None:
-            self._fin(step, "failed", str(error)[:MAX_DETAIL])
+            self._fin(step, "failed", str(error)[:MAX_DETAIL], args, None)
 
     @staticmethod
-    def _fin(step, status, detail=""):
+    def _fin(step, status, detail="", args=None, output=None):
         try:
-            if detail:
-                step.stream(detail)
+            body = [detail] if detail else []
+            # Fenced, so page content that happens to contain markup is shown rather
+            # than rendered - a result is data here, not something to interpret.
+            if args not in (None, "", {}):
+                body.append(f"```json\nargs: {as_json(args)}\n```")
+            if output is not None:
+                body.append(f"```json\nresult: {as_json(output)}\n```")
+            if body:
+                step.stream("\n\n".join(body))
             step.status = status
         except Exception:  # noqa: BLE001
             pass
