@@ -35,6 +35,25 @@ services:
       - .env
     command: ["uv", "run", "uvicorn", "osw_chatbot.structured_output.api:app", "--host", "0.0.0.0", "--port", "80"]
 
+  # The LLM proxy for the in-browser JupyterLite sandbox.
+  #
+  # Separate from osw-chatbot on purpose: that one is a Bokeh websocket app with
+  # per-user session state and --num-procs 4, this is a stateless streaming proxy.
+  # It holds the vendor key so the static sandbox never has to, and decides who may
+  # spend it by verifying the token the wiki mints (CHATBOT_SHARED_SECRET).
+  #
+  # Must be reachable from the sandbox. Same-origin is simplest - path-route it under
+  # the wiki's own host - but any origin works as long as it is named in
+  # LLM_PROXY_ALLOWED_ORIGINS.
+  osw-llm-proxy:
+    image: opensemanticworld/osw-chatbot
+    container_name: osw-llm-proxy
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["uv", "run", "uvicorn", "osw_chatbot.llmproxy.app:app",
+              "--host", "0.0.0.0", "--port", "82"]
+
   # Integration harness: a stand-in for the MediaWiki page that embeds the
   # chatbot iframe and answers every client-side tool from a fixture.
   # Start with:  docker compose --profile test up osw-chatbot-harness

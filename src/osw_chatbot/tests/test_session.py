@@ -26,6 +26,8 @@ if not os.environ.get("CHATBOT_SHARED_SECRET"):
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from osw_chatbot import auth  # noqa: E402
 
+#: Tools a default session must always offer. Not exhaustive - the sandbox set appears
+#: only when the wiki grants 'code-sandbox', and is checked separately.
 EXPECTED_TOOLS = [
     "multiply",
     "where_am_i",
@@ -120,7 +122,12 @@ def session():
 
 def test_the_llm_sees_the_same_tools_as_before(session):
     names = [t.name for t in session.tools]
-    assert names[: len(EXPECTED_TOOLS)] == EXPECTED_TOOLS
+    # Presence, not order. A tool silently disappearing is the failure worth catching -
+    # it leaves the model unable to do something it was told it could. Where it sits in
+    # the list is not a contract, and asserting it turned every registration into a
+    # test edit.
+    missing = [name for name in EXPECTED_TOOLS if name not in names]
+    assert not missing, f"tools the model can no longer see: {missing}"
     for tool in session.tools:
         assert tool.description, f"{tool.name} lost its docstring"
 
@@ -277,6 +284,46 @@ def test_token_carries_the_action_lists():
     assert token_actions(token) == (["websearch", "edit"], ["script"])
     # no / invalid token: fall back to search only, never to write access
     assert token_actions("garbage") == (["websearch"], [])
+
+
+def test_token_carries_the_wiki_origin():
+    from osw_chatbot.auth import token_wiki_url
+
+    now = int(time.time())
+
+    def mint(server):
+        return _mint({"u": "Alice", "iat": now, "exp": now + 600, "s": server})
+
+    assert token_wiki_url(mint("https://batterie-digital.fraunhofer.de")) == (
+        "https://batterie-digital.fraunhofer.de"
+    )
+    # a trailing slash would double up when a link is built from it
+    assert token_wiki_url(mint("https://wiki.example.org/")) == "https://wiki.example.org"
+    # the claim is echoed into the system prompt, so anything that is not an
+    # http(s) origin is dropped rather than passed through
+    for bad in ("javascript:alert(1)", "wiki.example.org", "", 42, None):
+        assert token_wiki_url(mint(bad)) is None
+    # a wiki too old to send the claim leaves where_am_i as the fallback
+    assert token_wiki_url(_mint({"u": "Alice", "iat": now, "exp": now + 600})) is None
+    assert token_wiki_url("garbage") is None
+
+
+def test_the_wiki_origin_reaches_the_system_prompt():
+    """The whole point of the claim: the model is told, not left to guess."""
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession(wiki_url="https://batterie-digital.fraunhofer.de")
+    try:
+        extra = session._prompt_extra()
+        assert "https://batterie-digital.fraunhofer.de" in extra
+    finally:
+        session.close()
+
+    bare = ChatSession()
+    try:
+        assert "fraunhofer" not in bare._prompt_extra()
+    finally:
+        bare.close()
 
 
 def test_skills_are_indexed_and_loadable(session):
@@ -878,3 +925,1049 @@ def test_the_websearch_tools_take_flat_arguments(session):
     assert set(web_search_tool.args) == {"query", "max_results"}
     assert set(simple_browse_web_page_tool.args) == {"url"}
     assert "param" not in web_search_tool.args
+
+
+def test_full_text_search_reports_results_and_emptiness(session):
+    """It returns structured hits now, not scraped Special:Search html.
+
+    The scrape missed uploaded-file text entirely - it used the default search
+    profile, which covers content namespaces only, so a phrase inside an
+    indexed PDF matched nothing - and it returned null when nothing matched,
+    which the backend raised at the model as a tool failure.
+    """
+    from osw_chatbot.toolcalling.progress import describe
+
+    tool = {t.name: t for t in session.tools}["full_text_search"]
+    doc = tool.description
+    assert "PDF" in doc
+    assert "not an error" in doc
+
+    pdf_hit = {"totalhits": 1, "results": [
+        {"title": "File:Manual.pdf", "snippet": "1.7 Referenzlogo 33"}]}
+    assert describe("full_text_search", pdf_hit) == "1 result"
+    assert describe("full_text_search", {"totalhits": 0, "results": []}) == "no results"
+    assert describe("full_text_search", {"totalhits": 57, "results": [
+        {"title": f"P{i}", "snippet": ""} for i in range(10)]}) == "10 results of 57"
+
+
+def test_document_text_is_rendered_with_page_numbers(session):
+    """Citations need a page, and the file itself must never cross the wire.
+
+    A 16 MB pdf becomes ~21.5 MB as a base64 data url, past bokeh's 20 MB
+    websocket limit - the reply was dropped and the call hung until timeout.
+    """
+    from osw_chatbot.toolcalling.agent import _render_file_text
+
+    indexed = {
+        "title": "File:Manual.pdf", "page_count": 279,
+        "matched_pages": [2, 5, 33],
+        "pages": [{"page": 2, "url": "https://wiki.example/w/index.php?title=File%3AManual.pdf&page=2",
+                   "text": "1.7 Referenzlogo"},
+                  {"page": 5, "url": "https://wiki.example/w/index.php?title=File%3AManual.pdf&page=5",
+                   "text": "Referenzlogo rules"}],
+        "truncated": True,
+    }
+    out = _render_file_text(indexed, "Referenzlogo")
+    assert "File:Manual.pdf (279 pages)" in out
+    assert "Pages containing 'Referenzlogo': 2, 5, 33" in out
+    assert "--- page 2 |" in out and "--- page 5 |" in out
+    # the citation link must travel with the page it belongs to
+    assert "title=File%3AManual.pdf&page=2" in out
+    assert "truncated" in out
+
+    # a format without page breaks must not invite an invented page number
+    blob = _render_file_text(
+        {"title": "File:Sheet.xlsx", "pages": None, "text": "some text",
+         "chars": 9, "truncated": False})
+    assert "no page breaks available" in blob
+    assert "--- page" not in blob, "no page marker when there are no pages"
+
+    assert _render_file_text({"title": "x", "pages": None, "text": ""}) == ""
+
+    tool = {t.name: t for t in session.tools}["get_file_content"]
+    assert set(tool.args) == {"file_title", "query"}
+    assert "url that renders exactly that page" in tool.description
+
+
+def test_one_huge_tool_result_cannot_fail_the_turn():
+    """A 2M-token prompt is a 400 from the vendor, i.e. no answer at all.
+
+    The scratchpad is never trimmed, so the cap has to be on the way out of the
+    tool. Truncating degrades the answer instead of losing it.
+    """
+    import asyncio
+
+    from osw_chatbot.config import MAX_TOOL_RESULT_CHARS
+    from osw_chatbot.toolcalling.agent import _bounded, _truncate
+
+    assert _truncate("short") == "short"
+    big = _truncate("x" * (MAX_TOOL_RESULT_CHARS + 5000))
+    assert len(big) < MAX_TOOL_RESULT_CHARS + 500
+    assert "truncated" in big
+
+    class FakeTool:
+        def __init__(self, result):
+            async def coroutine(*a, **k):
+                return result
+
+            self.coroutine = coroutine
+
+    huge = FakeTool("y" * (MAX_TOOL_RESULT_CHARS * 3))
+    _bounded(huge)
+    out = asyncio.run(huge.coroutine())
+    assert len(out) < MAX_TOOL_RESULT_CHARS + 500
+    assert "truncated" in out
+
+    # Structured results are left alone: slicing a dict repr or a base64 data
+    # url would corrupt it rather than shorten it.
+    structured = FakeTool({"pages": [1, 2, 3]})
+    _bounded(structured)
+    assert asyncio.run(structured.coroutine()) == {"pages": [1, 2, 3]}
+
+    # A tool with no coroutine must survive wrapping untouched.
+    class SyncOnly:
+        coroutine = None
+
+    assert _bounded(SyncOnly()) is not None
+
+
+def test_replayed_history_has_no_dangling_tool_calls():
+    """A tool_use with no tool_result is malformed input, and the record is evidence.
+
+    Without it the only trace of an edit is the assistant's claim to have made one.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from osw_chatbot.chat.history import dumps, loads
+
+    msgs = [
+        HumanMessage(content="edit the page"),
+        AIMessage(
+            content="I will edit it",
+            tool_calls=[
+                {
+                    "name": "edit_page",
+                    "args": {"title": "Item:X", "slots": {"main": "x" * 5000}},
+                    "id": "c1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="ok, revision 42 saved", tool_call_id="c1"),
+        AIMessage(content="Done - I have updated the page."),
+    ]
+    back = loads(dumps(msgs))
+
+    assert not [c for m in back for c in (getattr(m, "tool_calls", None) or [])]
+
+    # The record has to survive, or the model still cannot tell what it already did.
+    transcript = "\n".join(str(m.content) for m in back)
+    assert "edit_page" in transcript
+    assert "revision 42" in transcript
+    assert "Item:X" in transcript
+
+    # ...without the payload that made tool messages worth dropping.
+    assert "x" * 200 not in transcript
+
+
+def test_trimming_a_long_message_keeps_its_other_fields():
+    """Truncating a long message must not cost it the fields that identify it."""
+    from langchain_core.messages import AIMessage
+
+    from osw_chatbot.chat.history import trim_history
+
+    long_ai = AIMessage(content="y" * 50_000, id="keep-me")
+    (trimmed,) = trim_history([long_ai], max_messages=5, max_chars=100)
+    assert trimmed.id == "keep-me"
+    assert len(trimmed.content) < 200
+
+
+
+def test_writing_header_or_footer_is_refused():
+    """A prompt rule was not enough; these slots are rejected at the tool.
+
+    header/footer carry the default entity invokes and nothing else - overwriting them
+    makes the entity render blank on every page that uses them.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession, ClientToolError
+
+    session = ChatSession(actions=["websearch", "edit"])
+    try:
+        # The skill gate fires before any slot checking, which is the right order - the
+        # skill is where the rule is taught. Satisfy it so the guard itself is reachable.
+        session.loaded_skills.add("osl-page-editing")
+        edit = next(t for t in session.tools if t.name == "edit_page")
+        for slot in ("header", "footer"):
+            with pytest.raises(ClientToolError) as caught:
+                asyncio.run(edit.coroutine(title="Item:OSW1", slots={slot: "x"}))
+            message = str(caught.value)
+            assert slot in message
+            # The refusal has to say where the content actually goes, or the model
+            # retries the same write.
+            assert "header_template" in message and "main" in message
+    finally:
+        session.close()
+
+
+def test_a_loaded_skill_is_not_sent_twice():
+    """The body is already upstream in the conversation; resending spends it twice."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        load = next(t for t in session.tools if t.name == "load_skill")
+        name = next(iter(session.skills))
+        first = asyncio.run(load.coroutine(name=name))
+        second = asyncio.run(load.coroutine(name=name))
+        assert len(first) > 200, "the first call must return the real body"
+        assert "already loaded" in second
+        assert len(second) < len(first)
+    finally:
+        session.close()
+
+
+def test_a_page_written_this_session_is_not_reread():
+    """The transcript carries no record of the write, so the model asks again."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session.written_pages["Item:OSW1"] = {"main": "hello"}
+        read = next(t for t in session.tools if t.name == "get_page_content")
+        out = asyncio.run(read.coroutine(titles=["Item:OSW1"], include_html=False))
+        assert out["Item:OSW1"]["slots"] == {"main": "hello"}
+        assert "session" in out["Item:OSW1"]["note"]
+    finally:
+        session.close()
+
+
+def test_a_long_history_is_trimmed_to_fit_the_prompt():
+    """Past the model's limit the request is refused, so trimming beats not trimming."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from osw_chatbot.config import MAX_PROMPT_CHARS
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        big = "z" * 50_000
+        session.chat_history = [
+            m
+            for _ in range(40)
+            for m in (HumanMessage(content=big), AIMessage(content=big))
+        ]
+        assert sum(len(m.content) for m in session.chat_history) > MAX_PROMPT_CHARS
+
+        dropped = session._fit_prompt("a short prompt")
+        assert dropped is True
+        assert sum(len(m.content) for m in session.chat_history) <= MAX_PROMPT_CHARS
+        # Turns are dropped in pairs, so a human message never loses its reply.
+        assert len(session.chat_history) % 2 == 0
+
+        # A short history is left entirely alone.
+        session.chat_history = [HumanMessage(content="hi"), AIMessage(content="hello")]
+        assert session._fit_prompt("x") is False
+        assert len(session.chat_history) == 2
+    finally:
+        session.close()
+
+
+def test_a_mistyped_osw_id_is_caught_before_it_becomes_a_second_page():
+    """A transposed OSW-ID is still well formed, so only a check catches it."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import (
+        ChatSession,
+        ClientToolError,
+        nearest_known_id,
+    )
+
+    good = "a" * 32
+    assert nearest_known_id("a" * 31 + "b", {good}) == good  # one character off
+    assert nearest_known_id(good, {good}) is None  # identical is not a near miss
+    assert nearest_known_id("b" * 32, {good}) is None  # a different entity
+    assert nearest_known_id("a" * 31, {good}) is None  # different length
+
+    session = ChatSession(actions=["websearch", "edit"])
+    try:
+        session.loaded_skills.add("osl-page-editing")
+        session.minted_ids.add(good)
+        edit = next(t for t in session.tools if t.name == "edit_page")
+        typo = "Item:OSW" + ("a" * 31 + "b").upper()
+        with pytest.raises(ClientToolError) as caught:
+            asyncio.run(edit.coroutine(title=typo, slots={"main": "x"}))
+        # Naming the right title matters: without it the model guesses again.
+        assert good.upper() in str(caught.value)
+    finally:
+        session.close()
+
+
+def test_discover_skills_falls_back_to_the_bundled_ones():
+    """An empty list reads as "this wiki has no conventions", which is not the same."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        # No bridge, so the wiki lookup yields nothing - the fresh-wiki case.
+        session._wiki_skills = {}
+        discover = next(t for t in session.tools if t.name == "discover_skills")
+        found = asyncio.run(discover.coroutine(query=""))
+        assert {s["name"] for s in found} == set(session.skills)
+        assert all(s["description"] for s in found)
+
+        narrowed = asyncio.run(discover.coroutine(query="page-editing"))
+        assert [s["name"] for s in narrowed] == ["osl-page-editing"]
+    finally:
+        session.close()
+
+
+
+def test_discover_skills_merges_wiki_and_bundled_by_name():
+    """A wiki skill supersedes the copy it was migrated from; the rest survive.
+
+    The regression this pins: discovery used to return the wiki's skills whenever there
+    were any, and the bundled set only when there were none. wiki-dev holds exactly the
+    two skills that were migrated to it, so the third - 'sandbox', deliberately never
+    migrated because it describes a backend capability rather than a wiki convention -
+    dropped out of the listing. Asked to list its skills the assistant answered "I only
+    have access to two", while holding three.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        bundled = set(session.skills)
+        assert {"osl-page-editing", "sandbox"} <= bundled, bundled
+
+        # What wiki-dev actually holds: migrated copies of two of the bundled three.
+        session._wiki_skills = {
+            "osl-page-editing": {
+                "name": "osl-page-editing",
+                "description": "Wiki copy of the page editing conventions",
+                "title": "Item:OSW471075c3e92c4b198d78316cf2fb408e",
+                "body": "wiki body",
+            }
+        }
+        discover = next(t for t in session.tools if t.name == "discover_skills")
+        found = asyncio.run(discover.coroutine(query=""))
+        by_name = {s["name"]: s for s in found}
+
+        # Nothing is lost just because the wiki has a skill of its own.
+        assert bundled <= set(by_name), f"missing: {bundled - set(by_name)}"
+        assert "sandbox" in by_name
+
+        # The wiki's copy wins for the name it shares, and is listed once.
+        assert [s["name"] for s in found].count("osl-page-editing") == 1
+        assert by_name["osl-page-editing"]["title"].startswith("Item:OSW")
+        assert by_name["osl-page-editing"]["description"] == (
+            "Wiki copy of the page editing conventions"
+        )
+        # A title is how the model tells a wiki skill from a shipped one.
+        assert by_name["sandbox"]["title"] == ""
+
+        # Filtering still applies to both sources.
+        narrowed = asyncio.run(discover.coroutine(query="sandbox"))
+        assert "sandbox" in {s["name"] for s in narrowed}
+        assert "osl-page-editing" not in {s["name"] for s in narrowed}
+    finally:
+        session.close()
+
+
+def test_a_category_skill_gates_instantiation_and_pulls_prerequisites():
+    """A skill on a supercategory covers its subcategories; prerequisites come first."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "device-conventions": {
+                "name": "device-conventions",
+                "title": "Item:OSWdev",
+                "description": "how devices are written here",
+                "body": "...",
+                "related_to": ["Category:Device"],
+                "required_predecessors": ["Item:OSWbase"],
+            },
+            "wiki-basics": {
+                "name": "wiki-basics",
+                "title": "Item:OSWbase",
+                "description": "read this first",
+                "body": "...",
+                "related_to": [],
+                "required_predecessors": [],
+            },
+        }
+        # Sensor is a Device, so the Device skill applies to it.
+        session._superclass_cache["Category:Sensor"] = [
+            "Category:Sensor",
+            "Category:Device",
+        ]
+        needed = asyncio.run(session.skills_for_category("Category:Sensor"))
+        assert needed == ["wiki-basics", "device-conventions"], "prerequisite first"
+
+        # A category nobody wrote a skill for is not gated.
+        session._superclass_cache["Category:Unrelated"] = ["Category:Unrelated"]
+        assert asyncio.run(session.skills_for_category("Category:Unrelated")) == []
+    finally:
+        session.close()
+
+
+
+def test_the_gate_names_every_missing_skill_at_once_general_first():
+    """One refusal, listing the whole requirement in the order it should be read.
+
+    Both halves of this were observed on wiki-dev. Creating an Event requires the
+    category's own 'EventManagement' skill and 'osl-page-editing', which is attached to
+    Category:Entity four levels up. The gate used to raise on the first missing one and
+    stop, so the model learned the requirement a refusal at a time and the message - "has
+    a skill" - read as though it were the only one.
+
+    Order matters for the same reason: the category specific skill assumes you already
+    know how pages are written here, so the general convention has to come first.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession, ToolRefusal
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "osl-page-editing": {
+                "name": "osl-page-editing",
+                "title": "Item:OSWpage",
+                "description": "how pages are written here",
+                "body": "...",
+                "related_to": ["Category:Entity"],
+                "required_predecessors": [],
+            },
+            "event-management": {
+                "name": "event-management",
+                "title": "Item:OSWevent",
+                "description": "how events are written here",
+                "body": "...",
+                "related_to": ["Category:Event"],
+                "required_predecessors": [],
+            },
+        }
+        session._superclass_cache["Category:Event"] = [
+            "Category:Event",
+            "Category:Item",
+            "Category:Entity",
+        ]
+
+        # General before specific - the rule before the exception.
+        needed = asyncio.run(session.skills_for_category("Category:Event"))
+        assert needed == ["osl-page-editing", "event-management"], needed
+
+        edit = next(t for t in session.tools if t.name == "edit_page")
+        with pytest.raises(ToolRefusal) as caught:
+            asyncio.run(
+                edit.coroutine(
+                    title="Item:OSW" + "a" * 32,
+                    slots={"jsondata": {"type": ["Category:Event"]}},
+                )
+            )
+        message = str(caught.value)
+        # Both are named, so one retry can satisfy the whole requirement.
+        assert "load_skill('osl-page-editing')" in message, message
+        assert "load_skill('event-management')" in message, message
+        assert message.index("osl-page-editing") < message.index("event-management")
+    finally:
+        session.close()
+
+
+
+def test_an_unresolvable_prerequisite_is_reported_not_silently_dropped(capsys):
+    """A `required_predecessor` that is not itself a skill cannot be enforced.
+
+    The gate's only remedy is load_skill(), so a prerequisite pointing at a page without
+    the AI Skill keyword has nothing to load. Skipping it is right; skipping it quietly
+    is not - the page looks gated, the author sees `required_predecessor` set on the
+    wiki, and nothing says the requirement is inert.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "event-management": {
+                "name": "event-management",
+                "title": "Item:OSWevent",
+                "description": "how events are written here",
+                "body": "...",
+                "related_to": ["Category:Event"],
+                # A Tutorial on the wiki, but not tagged as a skill.
+                "required_predecessors": ["Item:OSWgeneralhints"],
+            },
+        }
+        session._superclass_cache["Category:Event"] = ["Category:Event"]
+
+        needed = asyncio.run(session.skills_for_category("Category:Event"))
+        # The skill itself is still gated; only its prerequisite is unenforceable.
+        assert needed == ["event-management"], needed
+
+        said = capsys.readouterr().out
+        assert "Item:OSWgeneralhints" in said, said
+        assert "not enforced" in said, said
+        assert "AI Skill keyword" in said, said
+    finally:
+        session.close()
+
+
+def test_a_prerequisite_cycle_does_not_hang_the_gate():
+    """required_predecessor is authored by hand and nothing on the wiki forbids a loop."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "a": {
+                "name": "a", "title": "Item:A", "description": "", "body": "",
+                "related_to": ["Category:X"], "required_predecessors": ["Item:B"],
+            },
+            "b": {
+                "name": "b", "title": "Item:B", "description": "", "body": "",
+                "related_to": [], "required_predecessors": ["Item:A"],
+            },
+        }
+        session._superclass_cache["Category:X"] = ["Category:X"]
+        assert sorted(asyncio.run(session.skills_for_category("Category:X"))) == ["a", "b"]
+    finally:
+        session.close()
+
+
+def test_the_gate_costs_nothing_when_no_skill_is_gated():
+    """The chain walk is five sequential round trips; do not spend them to learn nothing."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._wiki_skills = {
+            "some-skill": {
+                "name": "some-skill", "title": "Item:OSWx", "description": "", "body": "",
+                "related_to": [], "required_predecessors": [],
+            }
+        }
+        calls = []
+
+        async def record(name, args, **kw):
+            calls.append(name)
+            raise AssertionError("the gate must not walk when nothing is gated")
+
+        session.call_client_side_tool = record
+        assert asyncio.run(session.skills_for_category("Category:Anything")) == []
+        assert calls == []
+    finally:
+        session.close()
+
+
+def test_walking_one_chain_answers_the_rest_of_it():
+    """Hierarchies converge; the second lookup should not re-fetch the shared tail."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession()
+    try:
+        session._superclass_cache["Category:Tutorial"] = [
+            "Category:Tutorial", "Category:Article", "Category:Item", "Category:Entity"
+        ]
+        for i, step in enumerate(session._superclass_cache["Category:Tutorial"]):
+            session._superclass_cache.setdefault(
+                step, session._superclass_cache["Category:Tutorial"][i:]
+            )
+        # Article was never asked for directly, but walking Tutorial passed through it.
+        assert asyncio.run(session._superclasses("Category:Article")) == [
+            "Category:Article", "Category:Item", "Category:Entity"
+        ]
+    finally:
+        session.close()
+
+
+def test_a_refusal_is_not_dressed_up_as_an_unreachable_browser():
+    """A refusal carries its own instruction and must reach the model intact."""
+    from osw_chatbot.toolcalling.agent import (
+        ClientToolError,
+        ToolRefusal,
+        _tool_error_observation,
+    )
+
+    refusal = _tool_error_observation(
+        ToolRefusal("read the 'osl-page-editing' skill before writing this page")
+    )
+    assert "browser could not be reached" not in refusal
+    assert "do not retry" not in refusal
+    assert "osl-page-editing" in refusal
+
+    # A real transport failure still gets the advice it needs.
+    transport = _tool_error_observation(ClientToolError("the browser did not answer"))
+    assert "browser could not be reached" in transport
+
+    # Still a ClientToolError, so every existing handler keeps working.
+    assert issubclass(ToolRefusal, ClientToolError)
+
+
+
+def test_cell_outputs_do_not_carry_image_data_into_the_prompt():
+    """A plot costs ~11k tokens of base64 the model cannot read, on every later turn.
+
+    Measured on wiki-dev: three matplotlib figures in one session put 110 662 characters
+    of base64 PNG into the scratchpad. MAX_TOOL_RESULT_CHARS does not catch it - at
+    120 000 a single figure is well under the cap - because the result is not too long,
+    it just contains something no text model can use. The text/plain half of the bundle
+    ("<Figure size 600x400 with 1 Axes>") is the part worth keeping.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    png = "iVBORw0KGgo" + "A" * 44000
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        async def ran(name, args, **kwargs):
+            return {
+                "success": True,
+                "outputs": [
+                    {
+                        "output_type": "display_data",
+                        "data": {
+                            "text/plain": "<Figure size 600x400 with 1 Axes>",
+                            "image/png": png,
+                        },
+                    }
+                ],
+            }
+
+        session.call_client_side_tool = ran
+        tool = next(t for t in session.tools if t.name == "notebook_run_cell")
+        result = asyncio.run(
+            tool.coroutine(notebook_path="n.ipynb", cell_id="c1")
+        )
+        data = result["outputs"][0]["data"]
+
+        assert png not in json.dumps(result), "the base64 payload reached the model"
+        assert data["text/plain"] == "<Figure size 600x400 with 1 Axes>", data
+        # The model should still know a figure was produced, and roughly how big.
+        assert "image/png" in data
+        assert "rendered in the sandbox" in data["image/png"], data["image/png"]
+        assert len(json.dumps(result)) < 1000, len(json.dumps(result))
+    finally:
+        session.close()
+
+
+def test_a_sandbox_result_without_images_is_untouched():
+    """Stripping must not disturb the ordinary case - printed text, errors, tracebacks."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        payload = {
+            "success": False,
+            "errorName": "ValueError",
+            "traceback": ["Traceback (most recent call last):", "ValueError: nope"],
+            "outputs": [
+                {"output_type": "stream", "name": "stdout", "text": "42\n"},
+                {"output_type": "execute_result",
+                 "data": {"text/plain": "7", "text/html": "<b>7</b>"}},
+            ],
+        }
+
+        async def ran(name, args, **kwargs):
+            return payload
+
+        session.call_client_side_tool = ran
+        tool = next(t for t in session.tools if t.name == "kernel_execute")
+        result = asyncio.run(tool.coroutine(kernel_id="k1", code="print(42)"))
+        assert result == payload, result
+    finally:
+        session.close()
+
+
+
+def test_printed_base64_is_bounded_too():
+    """Stripping mime bundles misses the route the model actually takes.
+
+    With no file tools it reaches for kernel_execute and prints the bytes, so the image
+    arrives as ordinary stdout - {'output_type': 'stream', 'text': ...} - which carries
+    no mime type to strip. Observed on wiki-dev: the assistant read a 33 kB PNG with
+    open() and base64'd it into the conversation.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        blob = "iVBORw0KGgo" + "A" * 45000
+
+        async def ran(name, args, **kwargs):
+            return {
+                "success": True,
+                "outputs": [
+                    {"output_type": "stream", "name": "stdout", "text": blob}
+                ],
+            }
+
+        session.call_client_side_tool = ran
+        tool = next(t for t in session.tools if t.name == "kernel_execute")
+        result = asyncio.run(tool.coroutine(kernel_id="k1", code="print(b64)"))
+        text = result["outputs"][0]["text"]
+
+        assert blob not in json.dumps(result)
+        assert len(text) < 11000, len(text)
+        # The model is told what happened and what to do, not just cut off.
+        assert "truncated" in text and "45011 characters" in text, text[-200:]
+
+        # Ordinary output is left exactly as it is.
+        async def small(name, args, **kwargs):
+            return {"outputs": [{"output_type": "stream", "text": "42\n"}]}
+
+        session.call_client_side_tool = small
+        assert asyncio.run(tool.coroutine(kernel_id="k1", code="print(42)")) == {
+            "outputs": [{"output_type": "stream", "text": "42\n"}]
+        }
+    finally:
+        session.close()
+
+
+def test_the_whole_lab_surface_is_reachable_without_a_wrapper_each():
+    """The lab offered 23 commands and chat could reach 11 of them.
+
+    The rest - the entire filesystem API among them - had no wrapper, and the only
+    generic route, `sandbox_command`, was never exposed as a tool. So the model's one way
+    to look at a file was running Python that printed it, which is how a 33 kB PNG got
+    base64'd into a conversation.
+
+    Discovery asks the running lab instead of trusting a list kept here, so a command
+    added upstream needs no change in this file.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession
+
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        names = {t.name for t in session.tools}
+        assert {"discover_commands", "execute_command"} <= names, sorted(names)
+
+        sent = {}
+
+        async def record(name, args, **kwargs):
+            sent[name] = args
+            return {"commands": [], "count": 0}
+
+        session.call_client_side_tool = record
+
+        discover = next(t for t in session.tools if t.name == "discover_commands")
+        asyncio.run(discover.ainvoke({}))
+
+        # No tool may carry a parameter the schema will rename out from under it.
+        for tool in session.tools:
+            fields = getattr(tool.args_schema, "model_fields", None) or {}
+            assert not [f for f in fields if f.startswith("v__")], (
+                f"{tool.name} has a reserved parameter name: {sorted(fields)}"
+            )
+        assert "discover_commands" in sent
+
+        execute = next(t for t in session.tools if t.name == "execute_command")
+        # ainvoke, not .coroutine: the call has to pass through the generated schema.
+        # A parameter named `args` is rewritten to `v__args` there, so the tool blew up
+        # with "unexpected keyword argument 'v__args'" in a real turn while a direct
+        # call to the coroutine passed.
+        asyncio.run(
+            execute.ainvoke(
+                {
+                    "command": "jupyterlab-ai-commands:list-directory",
+                    "arguments": {"path": "x"},
+                }
+            )
+        )
+        # Forwarded verbatim: the id and the args the lab reported, nothing reshaped.
+        assert sent["sandbox_command"] == [
+            "jupyterlab-ai-commands:list-directory",
+            {"path": "x"},
+        ], sent["sandbox_command"]
+
+        # arguments is optional - a command that takes none must still be callable.
+        asyncio.run(
+            execute.ainvoke({"command": "jupyterlab-ai-commands:list-kernels"})
+        )
+        assert sent["sandbox_command"] == [
+            "jupyterlab-ai-commands:list-kernels",
+            {},
+        ], sent["sandbox_command"]
+    finally:
+        session.close()
+
+    # ... and none of it when the sandbox is off.
+    plain = ChatSession(actions=["websearch"])
+    try:
+        off = {t.name for t in plain.tools}
+        assert "discover_commands" not in off and "execute_command" not in off
+    finally:
+        plain.close()
+
+
+
+def test_push_and_pull_refuse_rather_than_report_a_file_that_is_not_there():
+    """Both are asserted to the user, so a failure must not be readable past.
+
+    These exist because ad-hoc kernel code can do the same job while skipping every rule
+    the extension enforces - osw-python talks to api.php directly, so the page gets
+    whatever name the code chose and no jsondata. That is how File:Emmc_events.ipynb
+    happened.
+    """
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession, ToolRefusal
+
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        push = next(t for t in session.tools if t.name == "push_file_to_osw")
+        pull = next(t for t in session.tools if t.name == "pull_file_from_osw")
+
+        with pytest.raises(ToolRefusal):
+            asyncio.run(push.coroutine(path=""))
+        with pytest.raises(ToolRefusal):
+            asyncio.run(pull.coroutine(title=""))
+
+        async def refused(name, args, **kwargs):
+            return {"ok": False, "message": "the sandbox is not open"}
+
+        session.call_client_side_tool = refused
+        with pytest.raises(ToolRefusal) as caught:
+            asyncio.run(push.coroutine(path="results.csv", label="Results"))
+        assert "not uploaded" in str(caught.value)
+        assert "invent" in str(caught.value)
+
+        with pytest.raises(ToolRefusal) as caught:
+            asyncio.run(pull.coroutine(title="File:OSW" + "a" * 32 + ".csv"))
+        assert "not copied into the sandbox" in str(caught.value)
+
+        sent = {}
+
+        async def worked(name, args, **kwargs):
+            sent[name] = args
+            return (
+                {"ok": True, "title": "File:OSW" + "b" * 32 + ".csv"}
+                if name == "push_file_to_osw"
+                else {"ok": True, "path": "data.csv"}
+            )
+
+        session.call_client_side_tool = worked
+        out = asyncio.run(push.coroutine(path="results.csv", label="Results"))
+        assert out["title"].startswith("File:OSW")
+        assert sent["push_file_to_osw"] == ["results.csv", "Results", ""]
+
+        out = asyncio.run(pull.coroutine(title="File:X.csv", path="data.csv"))
+        assert out["path"] == "data.csv"
+        assert sent["pull_file_from_osw"] == ["File:X.csv", "data.csv"]
+    finally:
+        session.close()
+
+
+
+def test_an_expanded_tool_step_says_what_happened():
+    """Expanding a step used to show the word "done" for most tools.
+
+    `describe()` had a case for twelve tools; every sandbox tool, every write and every
+    upload fell through to a literal "done". The one thing a user opens a step for - the
+    number a cell printed, the exception it raised, which page was written - was the one
+    thing not there.
+    """
+    from osw_chatbot.toolcalling.progress import describe
+
+    printed = describe("notebook_run_cell", {
+        "success": True,
+        "outputs": [{"output_type": "stream", "name": "stdout", "text": "42\n"}],
+    })
+    assert printed == "42", printed
+
+    # An error is the most important thing a step can carry.
+    failed = describe("kernel_execute", {
+        "success": False,
+        "outputs": [{"output_type": "error", "ename": "<class 'NameError'>",
+                     "evalue": "name 'osw' is not defined"}],
+    })
+    assert failed == "NameError: name 'osw' is not defined", failed
+
+    # A figure has no text to show, so say that one was drawn rather than nothing.
+    drawn = describe("notebook_run_cell", {
+        "outputs": [{"output_type": "display_data", "data": {
+            "text/plain": "<Figure size 600x400 with 1 Axes>",
+            "image/png": "<image/png, 34140 characters, rendered in the sandbox>"}}],
+    })
+    assert "1 figure drawn" in drawn, drawn
+
+    wrote = describe("edit_page", {
+        "ok": True, "title": "Item:OSW" + "0" * 32, "created": True,
+        "slots": ["jsondata"],
+    })
+    assert wrote.startswith("created Item:OSW0") and "jsondata" in wrote, wrote
+
+    uploaded = describe("save_notebook_to_wiki", {
+        "ok": True, "label": "Damped sine wave demo",
+        "title": "File:OSW" + "1" * 32 + ".ipynb",
+    })
+    assert "Damped sine wave demo" in uploaded, uploaded
+
+    # Nothing may fall back to the bare placeholder for these any more.
+    for name in ("notebook_run_cell", "kernel_execute", "edit_page",
+                 "save_notebook_to_wiki", "discover_commands"):
+        assert describe(name, {"count": 1, "outputs": []}) != "done", name
+
+
+
+def test_a_step_shows_the_call_as_well_as_the_summary():
+    """Expanding a step should show what was asked and what came back, clipped."""
+    from osw_chatbot.toolcalling.progress import MAX_JSON, as_json, describe
+
+    # Models hand arguments over as a JSON string as often as a dict; parsing it is the
+    # difference between a readable block and one long line.
+    rendered = as_json('{"title": "Item:OSW0d7f", "summary": "x"}')
+    assert rendered.startswith("{\n") and '"title"' in rendered, rendered
+
+    # Anything is renderable - a step that raised while describing a call would lose it.
+    assert as_json({"when": object()})
+    assert as_json(["a", 1, None])
+
+    # And nothing unbounded reaches the transcript.
+    huge = as_json({"html": "<div>" + "x" * 50_000 + "</div>"})
+    assert len(huge) <= MAX_JSON, len(huge)
+    assert huge.endswith("…")
+
+    # A per-tool case that reads a missing field must not render "None" at the user.
+    assert describe("where_am_i", {"unexpected": "shape"}) == "done"
+
+
+
+def test_every_backend_tool_has_a_handler_in_the_browser():
+    """A backend tool whose client half is missing fails only at runtime, in a chat.
+
+    Exactly that shipped: `discover_commands` and the push/pull pair were added to the
+    agent and to chatbot.js as functions, but the dispatcher branches that route a call
+    to them never landed - an edit matched nothing and reported success anyway. The tools
+    were offered to the model, called, and came back "returned nothing in the browser".
+
+    Reads the deployed chatbot.js, so it also catches the two halves drifting apart
+    later. Skipped where that file is not checked out beside this repo.
+    """
+    import os
+    import re
+    from pathlib import Path
+
+    client_path = Path(
+        os.environ.get(
+            "CHATBOT_JS",
+            "/usr/local/docker-container/osw-dev/mediawiki/extensions/Chatbot"
+            "/modules/ext.osw.ui.chatbot/chatbot.js",
+        )
+    )
+    if not client_path.exists():
+        pytest.skip(f"{client_path} is not available here")
+
+    agent_src = (
+        Path(__file__).resolve().parents[1] / "toolcalling" / "agent.py"
+    ).read_text()
+    # The name can sit on the next line - several calls wrap - so match across newlines.
+    wanted = set(
+        re.findall(r'call_client_side_tool\(\s*"([a-z_]+)"', agent_src, re.S)
+    )
+    assert wanted, "no client-side tool calls found - did the call shape change?"
+
+    client_src = client_path.read_text()
+    handled = set(re.findall(r'data\["name"\]\s*===\s*"([a-z_]+)"', client_src))
+    # ... plus the ones routed through the handlers lookup table.
+    table = re.search(r"const handlers = \{(.*?)\};", client_src, re.S)
+    if table:
+        handled |= set(re.findall(r"(\w+)\s*:", table.group(1)))
+
+    missing = sorted(wanted - handled)
+    assert not missing, (
+        f"these tools are offered to the model but no browser handler routes them: "
+        f"{missing}"
+    )
+
+
+
+def test_a_refused_model_request_does_not_kill_the_worker(monkeypatch):
+    """A 400 from the endpoint must fail the request, not end the process.
+
+    It used to `raise SystemExit`, which inherits from BaseException and so walks past
+    the caller's `except Exception` in `edit_page`. In a Bokeh server that ends the
+    *worker*: the log showed "child 1 (pid 34) exited with status 1, restarting" after
+    each one, taking every other session on that worker down with it - which from the
+    user's side is the chat going silent mid-turn.
+    """
+    import requests
+
+    from osw_chatbot.structured_output import llm as structured
+
+    class Boom(requests.RequestException):
+        pass
+
+    def refuse(*args, **kwargs):
+        raise Boom("400 Client Error: Bad Request")
+
+    monkeypatch.setattr(structured.requests, "post", refuse)
+
+    # Catchable as an ordinary error - this is the property that was missing.
+    with pytest.raises(Exception) as caught:
+        structured.get_llm_response("hello", None, None, None, False)
+    assert not isinstance(caught.value, SystemExit), "SystemExit ends the worker"
+    assert isinstance(caught.value, RuntimeError), type(caught.value)
+    assert "refused the request" in str(caught.value)
+
+    # And `response` being unbound (a connection error, a timeout) must not raise
+    # NameError on top of the failure being reported.
+    assert "NameError" not in str(caught.value)
+
+
+def test_a_failed_notebook_upload_is_an_error_not_a_field():
+    """The model asserts this one to the user, so a failure must not be readable past."""
+    import asyncio
+
+    from osw_chatbot.toolcalling.agent import ChatSession, ToolRefusal
+
+    session = ChatSession(actions=["websearch", "code-sandbox"])
+    try:
+        tool = next(t for t in session.tools if t.name == "save_notebook_to_wiki")
+
+        async def sandbox_gone(name, args, **kwargs):
+            return {"ok": False, "error": "the sandbox is not open"}
+
+        session.call_client_side_tool = sandbox_gone
+        with pytest.raises(ToolRefusal) as caught:
+            asyncio.run(tool.coroutine(label="x"))
+        message = str(caught.value)
+        assert "not saved" in message
+        # Naming the trap matters: the failure mode is inventing a title that looks real.
+        assert "invent" in message
+
+        async def uploaded(name, args, **kwargs):
+            return {"ok": True, "title": "File:Thing.ipynb", "url": "https://w/x"}
+
+        session.call_client_side_tool = uploaded
+        assert asyncio.run(tool.coroutine(label="x"))["title"] == "File:Thing.ipynb"
+    finally:
+        session.close()

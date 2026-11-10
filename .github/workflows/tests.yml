@@ -1,0 +1,65 @@
+#
+# The test suite, on every push and pull request.
+#
+# It was not running anywhere: `docker-image.yml` builds and pushes the image on main
+# without executing a single test, so a regression reached the registry and then a wiki
+# before anyone saw it.
+#
+# No credentials. The LLM client is constructed at import time (`llm.py` ends with
+# `llm = build_llm()`), so the variables below have to exist or collection fails - but
+# nothing in these suites calls a model, and the values are deliberately unusable.
+#
+name: Tests
+
+on:
+  push:
+    branches: ["main", "feat-*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    env:
+      LLM_PROVIDER: claude
+      ANTHROPIC_BASE_URL: https://example.invalid
+      ANTHROPIC_API_KEY: not-a-real-key
+      ANTHROPIC_MODEL: claude-sonnet-5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The browser half of the assistant lives in another repository, and one test
+      # reads it: every backend tool must have a handler in chatbot.js, or the tool is
+      # offered to the model and fails at runtime with "returned nothing in the browser".
+      # Pinned to a ref so a change over there cannot turn this build red on its own.
+      - name: Check out the Chatbot extension
+        uses: actions/checkout@v4
+        with:
+          repository: opensemanticworld/mediawiki-extensions-Chatbot
+          # The branch carrying the matching client half, not main - main predates the
+          # sandbox tools entirely and has none of their handlers. Move this to `main`
+          # once mediawiki-extensions-Chatbot#4 is merged.
+          ref: feat-skill-sandbox
+          path: .ci/Chatbot
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          # Resolution comes from uv.lock; this only fixes the tool that reads it.
+          version: "0.5.29"
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --frozen
+
+      - name: Run the tests
+        env:
+          CHATBOT_JS: ${{ github.workspace }}/.ci/Chatbot/modules/ext.osw.ui.chatbot/chatbot.js
+        run: |
+          uv run pytest \
+            src/osw_chatbot/tests/test_session.py \
+            src/osw_chatbot/tests/test_llmproxy.py \
+            -q

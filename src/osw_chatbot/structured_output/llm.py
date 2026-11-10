@@ -48,6 +48,22 @@ def _unwrap_dummy_root(res):
     return res
 
 
+
+def _response_detail(response) -> str:
+    """The server's own explanation, when there is one.
+
+    `response` is unbound if `requests.post` itself raised - a connection error, a
+    timeout - and reading `.text` there raised NameError on top of the original failure,
+    hiding it.
+    """
+    if response is None:
+        return ""
+    try:
+        return f" - {response.text[:500]}"
+    except Exception:  # noqa: BLE001 - never mask the error being reported
+        return ""
+
+
 def get_llm_response(promt, schema_dict = None, data_dict = None, files = None, web_search = False):
     """Dispatch to the provider configured via LLM_PROVIDER."""
     if LLM_PROVIDER in ("claude", "anthropic"):
@@ -93,10 +109,14 @@ def get_llm_response_claude_foundry(promt, schema_dict = None, data_dict = None,
         response = requests.post(endpoint, headers=headers, json=payload)
         response.raise_for_status()
     except requests.RequestException as e:
-        print(response.text)
-        if schema_dict is not None:
-            print(json.dumps(schema_dict, indent=2))
-        raise SystemExit(f"Failed to make the request. Error: {e}")
+        # RuntimeError, not SystemExit. SystemExit inherits from BaseException, so it
+        # walks straight past the caller's `except Exception` and ends the *process* -
+        # in a Bokeh worker that is every session on it, not just this request. A single
+        # 400 from the endpoint was killing the worker and dropping other users' chats.
+        detail = _response_detail(locals().get("response"))
+        raise RuntimeError(
+            f"the model endpoint refused the request: {e}{detail}"
+        ) from e
 
     body = response.json()
     result = {"ok": True}
@@ -186,10 +206,14 @@ def get_llm_response_azure_openai(promt, schema_dict = None, data_dict = None, f
         
         response.raise_for_status()  # Will raise an HTTPError if the HTTP request returned an unsuccessful status code
     except requests.RequestException as e:
-        print(response.text)
-        if schema_dict is not None: 
-            print(json.dumps(schema_dict, indent=2))
-        raise SystemExit(f"Failed to make the request. Error: {e}")
+        # RuntimeError, not SystemExit. SystemExit inherits from BaseException, so it
+        # walks straight past the caller's `except Exception` and ends the *process* -
+        # in a Bokeh worker that is every session on it, not just this request. A single
+        # 400 from the endpoint was killing the worker and dropping other users' chats.
+        detail = _response_detail(locals().get("response"))
+        raise RuntimeError(
+            f"the model endpoint refused the request: {e}{detail}"
+        ) from e
 
     # Handle the response as needed (e.g., print or process)
     print(response.json())

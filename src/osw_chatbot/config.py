@@ -4,6 +4,7 @@ Imported by the app modules so that env parsing (and its defaults) live in one
 file instead of being scattered over ``os.environ[...]`` lookups.
 """
 
+import json
 import os
 
 
@@ -55,6 +56,13 @@ CHATBOT_INTRO = os.getenv(
 # hides it, leaving the intro alone.
 CHATBOT_GREETING = os.getenv("CHATBOT_GREETING", "what's on your mind?").strip()
 
+# Largest file the browser may inline as a base64 data url. Base64 adds a
+# third, and bokeh drops a websocket message over its limit (20 MB by default)
+# without telling anyone - the call simply never comes back. Keep this below
+# three quarters of that; raise both together, with --websocket-max-message-size
+# on the panel serve command, if a genuinely large image has to be read.
+MAX_INLINE_FILE_BYTES = int(os.getenv("MAX_INLINE_FILE_BYTES", str(12 * 1024 * 1024)))
+
 # Largest attachment the browser will stage, in bytes.
 ATTACHMENT_MAX_BYTES = int(os.getenv("ATTACHMENT_MAX_BYTES", str(20 * 1024 * 1024)))
 
@@ -65,6 +73,20 @@ HISTORY_MAX_MESSAGES = int(os.getenv("HISTORY_MAX_MESSAGES", "40"))
 HISTORY_MAX_BYTES = int(os.getenv("HISTORY_MAX_BYTES", "100000"))
 # Truncate a single message before storing / replaying it.
 HISTORY_MAX_CHARS_PER_MESSAGE = int(os.getenv("HISTORY_MAX_CHARS_PER_MESSAGE", "8000"))
+
+# Largest contribution a single tool observation, or one attachment's extracted
+# text, may make to the prompt.
+#
+# chat_history is trimmed on every turn by the three limits above; the agent scratchpad
+# is not trimmed at all, so whatever a tool returns goes to the model whole inside the
+# same request. An oversized result does not degrade the answer, it fails the turn: the
+# vendor refuses the request rather than truncating it. Attachment text is bounded here
+# for the same reason, since ATTACHMENT_MAX_BYTES allows 20 MB.
+#
+# 120k characters is roughly 30k tokens, so several large observations still fit
+# in a 1M window alongside the history and the system prompt. Raise it only
+# together with the model's context limit.
+MAX_TOOL_RESULT_CHARS = int(os.getenv("MAX_TOOL_RESULT_CHARS", "120000"))
 
 ## Authentication
 
@@ -80,3 +102,64 @@ TOKEN_MAX_AGE = int(os.getenv("CHATBOT_TOKEN_MAX_AGE", "86400"))
 # "openai"  -> OpenAI-compatible surface of Microsoft Foundry (/openai/v1)
 # "claude"  -> Anthropic Messages surface of Microsoft Foundry (/anthropic)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+# Largest prompt we will assemble, in characters, across system text + history + the
+# current input. Roughly four characters per token, so ~150k tokens: well under the
+# model's 1M, because the agent scratchpad grows inside the turn after this check and
+# cannot be measured here.
+#
+# MAX_TOOL_RESULT_CHARS bounds one observation; this bounds the total. Past the model's
+# limit the vendor refuses the request outright, so a long session needs a ceiling or it
+# stops answering altogether.
+MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", str(600_000)))
+
+## Skills
+
+# Skills are ordinary wiki pages, found by configuration rather than by a category we
+# invented. Everything here is a default a deployment can retarget.
+
+#: Category a skill page must be an instance of. Article is deliberately broad - Tutorial
+#: and LLM-Skill both sit under it - because the keyword below is what actually makes a
+#: page a skill. `save_skill` refuses to write if this is missing from the target wiki.
+SKILL_CATEGORY = os.getenv(
+    "SKILL_CATEGORY", "Category:OSW92cc6b1a2e6b4bb7bad470dfdcfdaf26"
+)
+
+#: The "AI Skill" keyword, an instance of Category:Keyword.
+AI_SKILL_KEYWORD = os.getenv(
+    "AI_SKILL_KEYWORD", "Item:OSW1dd1c2ee927343ca9097a45a0af21678"
+)
+
+#: Merged into the jsondata of a saved skill, filling only what the assistant did not
+#: supply - it may add further keywords or further part_of targets. Any OSW-page id in
+#: here that does not exist on the target wiki is dropped before the merge, so a wiki
+#: without the keyword still gets a valid write instead of a dangling reference.
+#: `part_of` places skills under "OpenSemanticLab for developers", itself part of the
+#: OpenSemanticLab Manual.
+SKILL_DEFAULT_DATA = json.loads(
+    os.getenv(
+        "SKILL_DEFAULT_DATA",
+        json.dumps(
+            {
+                "keywords": [AI_SKILL_KEYWORD],
+                "part_of": ["Item:OSWe0cbdc9c1e0e4a53b21bd83e6c6d99ad"],
+            }
+        ),
+    )
+)
+
+#: How skills are found. The sandbox agent has its own setting sharing this default, so a
+#: deployment can narrow one without disturbing the other; keep the default here so the
+#: two cannot drift.
+SKILL_DISCOVERY_QUERY = os.getenv(
+    "SKILL_DISCOVERY_QUERY", f"[[HasKeyword::{AI_SKILL_KEYWORD}]]"
+)
+
+
+#: Cell output a text model cannot read. `text/plain` is deliberately absent: matplotlib
+#: puts "<Figure size 600x400 with 1 Axes>" there, which is the half worth keeping.
+#:
+#: Shared so the two sides agree. The agent strips these from a result; the progress line
+#: counts them to say "a figure was drawn". When only one of them knew about PDFs, a cell
+#: emitting one had its payload stripped and was then described as "no output".
+OPAQUE_MIME_PREFIXES = ("image/", "application/pdf", "video/", "audio/")

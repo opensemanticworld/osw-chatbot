@@ -42,6 +42,77 @@ or
 docker compose up osw-openai-api-wrapper
 ```
 
+### The sandbox LLM proxy
+
+```bash
+docker compose up osw-llm-proxy
+```
+
+`osw_chatbot.llmproxy` sits between the wiki's in-browser JupyterLite sandbox and the
+model provider. The sandbox is a static site, so whatever it ships can be read by anyone
+who can read the wiki - it can never hold an API key. This holds the key instead, and
+decides who may spend it by verifying the signed token `action=chatbottoken` issues.
+
+It is a separate service rather than a route on `osw-chatbot`, which is a Bokeh websocket
+app with per-user session state and `--num-procs 4`; a stateless streaming proxy has no
+use for that process model. It is also deliberately not a MediaWiki REST endpoint:
+streaming a completion through PHP-FPM holds a worker for the whole response, and a
+handful of concurrent chats would starve the wiki itself.
+
+What it refuses, and these are the interesting cases - see
+`src/osw_chatbot/tests/test_llmproxy.py`:
+
+| | |
+| --- | --- |
+| no token, a forged one, or one signed with another secret | 401 |
+| an expired token | 401 |
+| a token without the `code-sandbox` action | 403 |
+| `CHATBOT_SHARED_SECRET` unset | 503, rather than running open |
+
+That last one differs from the chat backend, which falls back to anonymous when no secret
+is configured. The chat backend cannot spend money against a vendor account; this can, so
+it refuses to start instead of quietly serving everybody.
+
+The caller's `Authorization` header is replaced, never forwarded - that is the entire
+point. The verified username is passed on as `X-OSW-User` for the provider's own logs.
+
+Configuration lives in `.env` under `LLM_PROXY_*`; the upstream defaults to
+`OPENAI_BASE_URL` / `OPENAI_API_KEY`, so a deployment that already set those needs
+nothing more than `LLM_PROXY_SERVER`.
+
+## Skills
+
+A skill is an ordinary wiki page carrying the **AI Skill** keyword
+(`Item:OSW1dd1c2ee927343ca9097a45a0af21678`). The keyword is what makes a page a skill,
+not its category - so a `Tutorial`, an `LLM-Skill` or a plain `Article` can all be one
+without being moved. Discovery is an SMW ask over `[[HasKeyword::…]]`; when a wiki holds
+none, the markdown skills bundled in `src/osw_chatbot/skills/` are used instead.
+
+**Install `world.opensemantic.base` and `world.opensemantic.meta.docs` on the wiki.**
+They supply the `Article` / `Keyword` / `part_of` vocabulary the defaults below assume.
+Without them `save_skill` refuses rather than typing a page against a category the wiki
+does not have, and any default naming a missing page is dropped instead of written as a
+dangling reference.
+
+| setting | default |
+| --- | --- |
+| `SKILL_CATEGORY` | `Category:OSW92cc6b1a2e6b4bb7bad470dfdcfdaf26` (Article) |
+| `SKILL_DISCOVERY_QUERY` | `[[HasKeyword::Item:OSW1dd1c2ee927343ca9097a45a0af21678]]` |
+| `SKILL_DEFAULT_DATA` | the keyword, plus `part_of` "OpenSemanticLab for developers" |
+
+The JupyterLite sandbox has its own discovery setting with the same default, delivered
+through `action=jupyterliteconfig`. It **extends** Jupyternaut's built-in skills rather
+than replacing them; here, wiki skills replace the bundled markdown.
+
+A skill may name the categories it covers in `related_to`. Writing an instance of such a
+category then requires loading that skill first, and a skill on a supercategory covers
+its subcategories. `required_predecessor` chains prerequisites, followed transitively.
+
+> **TODO: gate discovery on approved revisions.** Skill pages are content the model is
+> instructed to obey, and anyone who can edit the wiki can edit them. `ApprovedRevs` is
+> already in the wiki image, so an optional "approved revisions only" mode would close
+> the gap between "a user may edit this page" and "a user may steer the assistant".
+
 ## Development
 
 ```bash

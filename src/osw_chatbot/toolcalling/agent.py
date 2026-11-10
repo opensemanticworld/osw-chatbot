@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional, Set, Union
@@ -15,6 +16,13 @@ from pydantic import BaseModel, ValidationError
 from osw_chatbot.chat.chat_panel_component import ChatFrontendWidget
 from osw_chatbot.config import (
     CLIENT_TOOL_TIMEOUT,
+    MAX_INLINE_FILE_BYTES,
+    MAX_PROMPT_CHARS,
+    SKILL_CATEGORY,
+    SKILL_DEFAULT_DATA,
+    SKILL_DISCOVERY_QUERY,
+    MAX_TOOL_RESULT_CHARS,
+    OPAQUE_MIME_PREFIXES,
     CONFIRM_TIMEOUT,
     PARENT_ORIGINS,
 )
@@ -34,6 +42,9 @@ from osw_chatbot.websearch.interative_websearch import tools as websearch_tools
 # `create_category_instance` is here for the same reason, though note the
 # browser returns as soon as the editor is open rather than awaiting it, so
 # the lock does not actually keep two editors apart.
+# How much extracted document text to hand the model at once.
+FILE_TEXT_MAX_CHARS = int(os.getenv("FILE_TEXT_MAX_CHARS", "20000"))
+
 EXCLUSIVE_CLIENT_TOOLS = {
     "edit_page",
     "delete_page",
@@ -41,6 +52,12 @@ EXCLUSIVE_CLIENT_TOOLS = {
     "redirect",
     "create_category_instance",
     "confirm_action",
+    # Each opens or focuses the sandbox tab, and run_in_sandbox puts a confirmation in
+    # front of the user. Two of those racing would leave them answering one dialog while
+    # another is being drawn over it.
+    "open_sandbox",
+    "create_notebook",
+    "run_in_sandbox",
 }
 
 
@@ -61,9 +78,49 @@ def osw_id_of(title: str) -> Optional[str]:
     return match.group(2).lower()
 
 
+def nearest_known_id(osw_id: str, known) -> Optional[str]:
+    """A known OSW-ID that `osw_id` is a near-miss of, or None.
+
+    OSW-IDs are 32 hex characters with no redundancy, so a model copying one across turns
+    transposes or drops a character and produces something that is still well-formed and
+    points at nothing. Same length and a handful of differing positions is a typo; more
+    than that is a different entity and must not be silently rewritten.
+    """
+    if not osw_id:
+        return None
+    for candidate in known:
+        if candidate == osw_id or len(candidate) != len(osw_id):
+            continue
+        differing = sum(1 for a, b in zip(candidate, osw_id) if a != b)
+        if 0 < differing <= 3:
+            return candidate
+    return None
+
+
 def uuid_from_osw_id(osw_id: str) -> str:
     """OSW-IDs are a uuid with the hyphens taken out; put them back."""
     return str(uuid.UUID(osw_id))
+
+
+#: Slots the wiki owns. 'header' and 'footer' always carry the default entity invokes and
+#: nothing else; writing them replaces the rendering machinery on every page that uses
+#: them. Content for one page belongs in 'main'; content for every instance of a category
+#: belongs in 'header_template' / 'footer_template'.
+MANAGED_SLOTS = frozenset({"header", "footer"})
+
+
+def _first_text(value) -> str:
+    """OSW stores labels and descriptions as [{text, lang}]. Prefer English, take any."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and value:
+        english = next(
+            (e for e in value if isinstance(e, dict) and e.get("lang") == "en"), None
+        )
+        chosen = english if english is not None else value[0]
+        if isinstance(chosen, dict):
+            return chosen.get("text", "")
+    return ""
 
 
 def required_skill(title: str) -> Optional[str]:
@@ -87,6 +144,16 @@ class ClientToolError(ToolException):
     """
 
 
+class ToolRefusal(ClientToolError):
+    """A tool deliberately declined - a gate, a guard, a malformed argument.
+
+    Distinct from ClientToolError because the two need opposite advice. A browser that
+    did not answer is worth telling the user about and not retrying; a refusal says what
+    to do instead - load this skill, use that slot, use this title - and retrying after
+    doing it is the point.
+    """
+
+
 def as_text(output) -> str:
     """Flatten an LLM response to plain text.
 
@@ -107,17 +174,141 @@ def as_text(output) -> str:
     return "" if output is None else str(output)
 
 
+#: Per-string bound inside a sandbox result. Generous enough for real output - a dataframe
+#: head, a long log - and far below a base64 image, which is the thing worth stopping.
+_MAX_SANDBOX_STRING = 10_000
+
+
+def _without_binary_payloads(value):
+    """Replace binary cell outputs with a note that one was produced.
+
+    A notebook that draws a plot returns the PNG inline, base64 encoded. One 600x400
+    matplotlib figure is ~45 000 characters - about 11 000 tokens - and the model cannot
+    see it as an image, so every one of them is noise that it pays for again on each
+    following turn, because the scratchpad replays the whole exchange. Three plots in one
+    session measured 110 662 characters.
+
+    `MAX_TOOL_RESULT_CHARS` does not catch this: at 120 000 the blob is comfortably under
+    the cap, so nothing trims it. The problem is not that the result is too long, it is
+    that this part of it carries no information for the reader.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                f"<{key}, {len(val)} characters, rendered in the sandbox>"
+                if isinstance(key, str)
+                and key.startswith(OPAQUE_MIME_PREFIXES)
+                and isinstance(val, str)
+                else _without_binary_payloads(val)
+            )
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_without_binary_payloads(item) for item in value]
+    if isinstance(value, str) and len(value) > _MAX_SANDBOX_STRING:
+        # Stripping mime bundles is not enough on its own: a stream output is
+        # {'output_type': 'stream', 'text': ...}, so code that prints base64 - which is
+        # what the model falls back to when it has no file tools - carries the whole
+        # image through as ordinary stdout.
+        return (
+            value[:_MAX_SANDBOX_STRING]
+            + f"\n... truncated, {len(value)} characters in total. Re-run printing only "
+            "the part you need - the sandbox still holds the whole thing."
+        )
+    return value
+
+
+def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
+    """Cap one contribution to the prompt, saying so rather than silently cutting."""
+    if len(text) <= limit:
+        return text
+    return (
+        f"{text[:limit]}\n\n[truncated: {len(text)} characters, showing {limit}. "
+        "Narrow the query and call again for the part you need.]"
+    )
+
+
+def _bounded(tool):
+    """Stop one oversized observation from failing the whole turn.
+
+    The scratchpad is not trimmed - see MAX_TOOL_RESULT_CHARS in config. Only
+    string results are capped: the tools that can be huge return text, while the
+    structured ones are small, and blindly slicing a base64 data url or a dict
+    repr would corrupt it instead of shortening it.
+    """
+    original = getattr(tool, "coroutine", None)
+    if original is None:
+        return tool
+
+    async def bounded(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        return _truncate(result) if isinstance(result, str) else result
+
+    bounded.__name__ = getattr(original, "__name__", "bounded")
+    tool.coroutine = bounded
+    return tool
+
+
 def _tool_error_observation(error: Exception) -> str:
     """Feed a failed client-side tool back to the model as an observation.
 
-    Previously a timeout returned None, which then blew up in `WebPage(**None)`
-    and surfaced as a raw traceback in the chat. Handing the model a sentence
-    instead lets it retry or tell the user what went wrong.
+    A sentence the model can act on - retry, or tell the user what went wrong. Returning
+    None here reaches `WebPage(**None)` and surfaces as a traceback in the chat.
     """
+    if isinstance(error, ToolRefusal):
+        # A refusal carries its own instruction; the browser advice below would
+        # contradict it.
+        return f"Error: {error}"
     return (
         f"Error: {error}. The users browser could not be reached - do not retry "
         "more than once, tell the user instead."
     )
+
+
+def _render_file_text(indexed: dict, query: str = "") -> str:
+    """Lay out extracted document text so the model can cite a page.
+
+    Page numbers only exist for formats the wiki splits per page - PDFs via
+    PdfHandler. For anything else there is one undifferentiated blob, and the
+    header says so rather than inviting an invented page number.
+    """
+    title = indexed.get("title") or "the file"
+    pages = indexed.get("pages")
+
+    if pages:
+        head = [f"Extracted text of {title}"]
+        if indexed.get("page_count"):
+            head[0] += f" ({indexed['page_count']} pages)"
+        matched = indexed.get("matched_pages")
+        if query and matched:
+            head.append(
+                f"Pages containing {query!r}: "
+                + ", ".join(str(p) for p in matched[:20])
+                + ("..." if len(matched) > 20 else "")
+            )
+        elif query:
+            head.append(f"No page contains {query!r}; showing the start instead.")
+        body = "\n\n".join(
+            # the url renders that single page, so a citation can point at it
+            f"--- page {page['page']}"
+            + (f" | {page['url']}" if page.get("url") else "")
+            + f" ---\n{page['text']}"
+            for page in pages
+        )
+        if indexed.get("truncated"):
+            body += "\n\n[truncated - ask again with a narrower query for more]"
+        return "\n".join(head) + "\n\n" + body
+
+    text = indexed.get("text")
+    if not text:
+        return ""
+    header = f"Extracted text of {title} (no page breaks available)"
+    if indexed.get("truncated"):
+        text += (
+            f"\n\n[truncated - showing {len(text)} of "
+            f"{indexed.get('chars')} characters]"
+        )
+    return f"{header}\n\n{text}"
 
 
 def _tool_input_observation(error: Exception) -> str:
@@ -163,6 +354,7 @@ SYSTEM_TEXT = (
     "This wiki stores things as structured entities, so create a device, event, person, project or sample as an instance of its category (find it with 'find_page_from_topic', read it with 'get_category_schema'), never as a plain wikitext page. The exceptions are the user's own 'User:<name>/...' subpages, '.js' and '.css' pages, and the main page."
     "Never invent an OSW-ID. Every new entity gets its title from the 'new_osw_id' tool, used exactly as returned - OSW-IDs must be random and globally unique, and a made up one collides with other wikis or points at nothing."
     "Report what actually happened: only call a page created, saved or deleted when the tool returned success. If a tool reported an error or a timeout, say exactly that - a timed out write may or may not have gone through, so re-read the page and tell the user what you found instead of retrying blindly or claiming it worked."
+    "A tool returning without an error is not evidence that the thing happened. Read what it actually returned before reporting anything: a cell can run to completion and produce nothing, a query can succeed and match zero rows, an upload can report a result that carries no page title, and an error can arrive as ordinary text inside an otherwise successful output. Look for the evidence that fits the task - rows, printed values, a title, a revision - and if it is absent, say so and investigate rather than describing what you expected to happen. Where you have not checked, say that plainly instead of implying you did."
 )
 
 
@@ -201,8 +393,13 @@ class ChatSession:
         user=None,
         actions=None,
         confirm_actions=None,
+        wiki_url=None,
     ):
         self.user = user  # verified wiki username, or None when unauthenticated
+        # Origin of the wiki that signed the token, when it sent one. Goes into
+        # the system prompt so the model never has to guess it; see
+        # auth.token_wiki_url for why guessing was the previous behaviour.
+        self.wiki_url = wiki_url
         # Actions the wiki signed into the token. Only the ones that run *here*
         # are enforced here - the write actions are gated in the browser, which
         # is where the user's MediaWiki session is.
@@ -232,6 +429,21 @@ class ChatSession:
 
         self.skills = load_skills()
         self.loaded_skills: Set[str] = set()
+        # title -> slots this session successfully wrote. The model re-reads pages it has
+        # just written because the history carries no record of the write; serving that
+        # read from here costs nothing and answers it honestly. Only successful writes are
+        # recorded, and `include_html` still goes to the wiki, so a confirming read that
+        # actually needs the rendered page is never short-circuited.
+        self.written_pages: Dict[str, Any] = {}
+        # SKILL_DEFAULT_DATA with references this wiki lacks removed; see
+        # _usable_skill_defaults. None until the first skill write probes for them.
+        self._skill_defaults: Optional[Dict[str, Any]] = None
+        # category -> its superclass chain. The hierarchy does not move during a
+        # conversation, and the gate would otherwise resolve it on every write.
+        self._superclass_cache: Dict[str, List[str]] = {}
+        # Wiki-authored skills, fetched through the browser the first time something
+        # asks. None means 'not looked yet'; {} means 'looked, this wiki has none'.
+        self._wiki_skills: Optional[Dict[str, Dict[str, str]]] = None
         # OSW-IDs this session handed out. Models do not generate random
         # uuids - they fill in a pattern (aa11bb22cc3344..., a1b2c3d4...),
         # which collides the moment two wikis coin the same entity.
@@ -240,19 +452,57 @@ class ChatSession:
         self.tools = self._build_tools()
         if "websearch" in self.actions:
             self.tools += [self._gated_websearch_tool(t) for t in websearch_tools]
-        # The websearch tools join after _build_tools, so they used to miss both
-        # handlers - which is how a malformed web_search_tool call killed a turn.
+        # The websearch tools join after _build_tools, so the handlers are attached
+        # here, to the whole list. Without them a malformed call kills the turn.
         for tool in self.tools:
             tool.handle_tool_error = _tool_error_observation
             tool.handle_validation_error = _tool_input_observation
+            _bounded(tool)
         self.agent_executor = AgentExecutor(
             agent=create_tool_calling_agent(
-                llm, self.tools, build_prompt(skill_index(self.skills))
+                llm, self.tools, build_prompt(self._prompt_extra())
             ),
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
         )
+
+    def _prompt_extra(self) -> str:
+        """Per-session additions to the system prompt.
+
+        The wiki origin goes first and in imperative form. SYSTEM_TEXT already
+        forbids guessing the domain, but that rule points at a tool the model
+        has to remember to call; stating the answer outright removes the step
+        it was skipping.
+        """
+        parts = []
+        if self.wiki_url:
+            parts.append(
+                f"This conversation is hosted by the wiki at {self.wiki_url} - "
+                "use exactly that origin for every link you write, and do not "
+                "call 'where_am_i' merely to learn the domain. Any other host "
+                "in a link is wrong, including one you remember from elsewhere: "
+                "you have no memory of previous conversations."
+            )
+        if "code-sandbox" in self.actions:
+            # The sandbox lives in the page; this session was built when the page
+            # loaded. So nothing in the restored history can be trusted about whether
+            # it is open - the user may have reloaded, which throws the panel and its
+            # kernel away while leaving the conversation intact, and the assistant then
+            # answers from a memory of a sandbox that no longer exists.
+            parts.append(
+                "The code sandbox is part of the page and does not survive a reload or "
+                "a navigation, while this conversation does. Nothing earlier in it tells "
+                "you whether the sandbox is open now. Before saying it is open, visible, "
+                "or still holding a notebook or a variable, call 'sandbox_status' and "
+                "report what it returns - and if it is gone, say so and reopen it rather "
+                "than describing what used to be there."
+            )
+
+        index = skill_index(self.skills)
+        if index:
+            parts.append(index)
+        return "\n\n".join(parts)
 
     def _gated_websearch_tool(self, tool):
         """Ask the browser before searching, when the wiki wants that.
@@ -273,7 +523,7 @@ class ChatSession:
                 "confirm_action", ["websearch", {"query": str(args or kwargs)[:200]}]
             )
             if not allowed:
-                raise ClientToolError(
+                raise ToolRefusal(
                     "the user declined the web search - answer without it and say so"
                 )
             return await original(*args, **kwargs)
@@ -413,12 +663,12 @@ class ChatSession:
                 self._publish_calls()
 
         if result is None:
-            raise ClientToolError(f"'{name}' returned no result")
+            raise ToolRefusal(f"'{name}' returned no result")
         # Convention for the write tools: they report refusals as data rather
         # than throwing, so the browser can phrase the reason. Raise here so the
         # model is told instead of reading {'ok': false} as a success.
         if isinstance(result, dict) and result.get("ok") is False:
-            raise ClientToolError(
+            raise ToolRefusal(
                 result.get("message") or f"'{name}' failed ({result.get('code')})"
             )
         return result
@@ -442,13 +692,13 @@ class ChatSession:
 
             response = await session.call_client_side_tool("where_am_i", [])
             if not isinstance(response, dict):
-                raise ClientToolError("where_am_i: unexpected response from the browser")
+                raise ToolRefusal("where_am_i: unexpected response from the browser")
             try:
                 return WebPage(**response)
             except ValidationError as e:
                 # The browser is not a trusted source - never let a surprising
                 # payload surface as a raw traceback in the chat.
-                raise ClientToolError(f"where_am_i: malformed response: {e}") from e
+                raise ToolRefusal(f"where_am_i: malformed response: {e}") from e
 
         @langchain_core.tools.tool
         async def highlight_html_element(x_path) -> str:
@@ -464,9 +714,9 @@ class ChatSession:
 
         @langchain_core.tools.tool
         async def full_text_search(query) -> str:
-            """Finds a pages by running a full text search in the indexed content (title, description, content). Returns a html list.
-            Anchor links contain the page title (title attribute) that can be used to load the page with the get_page_content tool.
-            Anchor links also contain the human label as inner text.
+            """Finds pages by running a full text search over everything indexed: page titles, wikitext, and the extracted text of uploaded files such as PDFs. Searches all namespaces, so a phrase that appears only inside an uploaded document is found too.
+
+            Returns {'totalhits': n, 'results': [{'title', 'snippet'}]}, where the snippet is the matching passage as plain text. An empty 'results' list means nothing matched - that is an answer, not an error. Pass a title to 'get_page_content' to read the whole page.
             """
             return await session.call_client_side_tool("full_text_search", [query])
 
@@ -484,6 +734,24 @@ class ChatSession:
             If include_html is true the html content of the page also returned. This is more expensive but may also contain aggregated content from other pages,
             e.g. if the page contains a overview list.
             """
+            # Pages written in this session are answered from what was written. The model
+            # re-reads them because the transcript carries no record of its own writes;
+            # fetching again costs a round trip to say what we already know. Anything
+            # needing the *rendered* page still goes to the wiki.
+            if not include_html:
+                known = [t for t in titles if t in session.written_pages]
+                if known and len(known) == len(titles):
+                    return {
+                        t: {
+                            "slots": session.written_pages[t],
+                            "note": (
+                                "written by you earlier in this session; the wiki was not "
+                                "queried again. Pass include_html=true to re-read it."
+                            ),
+                        }
+                        for t in titles
+                    }
+
             return await session.call_client_side_tool(
                 "get_page_content", [titles, include_html]
             )
@@ -523,8 +791,9 @@ class ChatSession:
                                 + org_prompt
                             )
                             prompt += res["output"]
-                        except Exception as e:
-                            print(e)
+                        except Exception as e:  # noqa: BLE001
+                            print(f"osw-chatbot: could not prefill from the schema ({e})",
+                                  flush=True)
                     jsonschema = await session.call_client_side_tool(
                         "get_category_schema", [category_page]
                     )
@@ -533,12 +802,12 @@ class ChatSession:
                         get_llm_response, prompt, jsonschema, None, None, False
                     )
                     default_data = default_data_res["result"]
-                    print("DESCRIPTION", instance_description, "DATA", default_data)
                     default_data, unresolved = await session._resolve_references(
                         default_data, jsonschema
                     )
-                except Exception as e:
-                    print(e)
+                except Exception as e:  # noqa: BLE001
+                    print(f"osw-chatbot: could not resolve the instance defaults ({e})",
+                          flush=True)
             opened = await session.call_client_side_tool(
                 "create_category_instance", [category_page, default_data]
             )
@@ -565,12 +834,30 @@ class ChatSession:
             return await session.call_client_side_tool("smw_ask_query", [query])
 
         @langchain_core.tools.tool
-        async def get_file_content(file_title) -> str:
+        async def get_file_content(file_title, query: str = "") -> str:
             """Gets the content of a wiki file by its title (File:OSW...). Can handle images and documents.
+            For documents such as PDFs this returns the text the wiki already extracted, page by page. Each page comes with the url that renders exactly that page, so cite a quote by linking to it - never cite a page number without the link, and never build such a url by hand. Pass 'query' with the term you are looking for and only the pages containing it come back - do that for a long document rather than reading it from the start. Long results are truncated and say so.
             Important: Use this function only for file in the current wiki domain, not for external urls retrieved via web search!
             For file links from web search use the web search tool to get the content.
             """
-            result = await session.call_client_side_tool("get_file_data_url", [file_title])
+            # The indexed text first. Fetching the file itself meant base64 over
+            # the websocket - a 16 MB pdf becomes ~21.5 MB, past bokeh's 20 MB
+            # message limit, so the reply was dropped and the call hung until it
+            # timed out. The wiki already has the text; ask for that.
+            try:
+                indexed = await session.call_client_side_tool(
+                    "get_file_text", [file_title, FILE_TEXT_MAX_CHARS, query or ""]
+                )
+            except ClientToolError:
+                indexed = None
+            if isinstance(indexed, dict):
+                rendered = _render_file_text(indexed, query)
+                if rendered:
+                    return rendered
+
+            result = await session.call_client_side_tool(
+                "get_file_data_url", [file_title, MAX_INLINE_FILE_BYTES]
+            )
 
             # result is a data_url, e.g. data:/plain;base64,....
 
@@ -612,22 +899,17 @@ class ChatSession:
 
             Never put structured data into 'main'. On Item: and Property: pages all structured content goes into the 'jsondata' slot and 'main' stays empty wikitext - JSON written to 'main' shows up as a wall of raw text, leaves the entity without data and makes it invisible to queries.
 
-            `slots` maps a slot name to its content:
-            - 'jsondata' and 'jsonschema': a JSON object (not a string).
-            - 'main': wikitext. Exceptions: on pages ending in .js or .css it is JavaScript or CSS source, and in the legacy 'JsonSchema:' namespace it is a JSON object.
-            - 'header' and 'footer': wikitext, normally '{{#invoke:Entity|header}}' and '{{#invoke:Entity|footer}}'. These are set automatically when you write 'jsondata', so you rarely pass them.
-            - 'schema_template', 'data_template', 'header_template', 'footer_template': template source (Handlebars/wikitext).
+            `slots` maps a slot name to its content. Choose by what the content is *for*:
+            - content of this page itself -> 'main'. Wikitext only. Exceptions: on pages ending in .js or .css it is JavaScript or CSS source, and in the legacy 'JsonSchema:' namespace it is a JSON object.
+            - content that should appear on *every instance* of a category -> 'header_template' (rendered above the page) or 'footer_template' (below). Wikitext only.
+            - structured data -> 'jsondata', a JSON object (not a string). 'jsonschema' likewise.
+            - 'schema_template' and 'data_template': template source (Handlebars/wikitext).
+            - 'header' and 'footer': NEVER write these. They always carry the default entity invokes and nothing else; the call is rejected if you include them.
 
             Write wikitext, never Markdown - read the 'osl-page-editing' skill first if you are unsure.
             Scripts (.js/.css) may only be written inside the current user's own space, i.e. 'User:<name>/...'.
             Returns {'ok': true, 'title', 'created'} or raises with the reason the wiki refused.
             """
-            needed = required_skill(title)
-            if needed in session.skills and needed not in session.loaded_skills:
-                raise ClientToolError(
-                    f"read the '{needed}' skill before writing this page: call "
-                    f"load_skill('{needed}'), follow it, then make this edit again"
-                )
             # Models regularly hand the whole slot map over as a JSON string.
             # Accepting it is cheaper than a failed turn: a pydantic
             # ValidationError is not a ToolException, so it bypasses
@@ -636,21 +918,104 @@ class ChatSession:
                 try:
                     slots = json.loads(slots)
                 except ValueError as exc:
-                    raise ClientToolError(
+                    raise ToolRefusal(
                         "'slots' must be an object mapping slot name to content, "
                         f"and the string given is not valid JSON ({exc})"
                     ) from None
             if not isinstance(slots, dict):
-                raise ClientToolError(
+                raise ToolRefusal(
                     "'slots' must be an object mapping slot name to content, "
                     f"got {type(slots).__name__}"
                 )
+            # What has to be read before this page can be written, as one answer.
+            #
+            # Two things decide it: the kind of page (a .js page needs the component
+            # skill, an entity needs the page conventions) and the categories it
+            # instantiates, since instantiating a category means following that
+            # category's conventions and the wiki is where those are written down.
+            #
+            # Collected together rather than enforced separately. They used to raise one
+            # at a time, from two places with two different wordings, so a single edit
+            # produced "read the 'osl-page-editing' skill" and then, a turn later,
+            # "'Category:X' has a skill that has to be read first" - which reads as the
+            # only requirement, and makes the first one look as though it was never
+            # asked for. Checked before the write, because the point is to shape what
+            # gets written.
+            missing, gated = [], []
+            needed = required_skill(title)
+            if needed in session.skills and needed not in session.loaded_skills:
+                missing.append(needed)
+            for category in (slots.get("jsondata") or {}).get("type") or []:
+                if not isinstance(category, str):
+                    continue
+                for required in await session.skills_for_category(category):
+                    if required in session.loaded_skills or required in missing:
+                        continue
+                    missing.append(required)
+                    if category not in gated:
+                        gated.append(category)
+            if missing:
+                calls = ", ".join(f"load_skill('{name}')" for name in missing)
+                # Naming the categories only when some are involved: a .js page is gated
+                # by what it is, not by anything it instantiates, and "'' has
+                # conventions" would be a puzzle rather than a hint.
+                because = (
+                    " - "
+                    + ", ".join(repr(c) for c in gated)
+                    + (
+                        " has conventions of its own"
+                        if len(gated) == 1
+                        else " have conventions of their own"
+                    )
+                    if gated
+                    else ""
+                )
+                raise ToolRefusal(
+                    "this page cannot be written until its conventions have been read"
+                    + because
+                    + ". Call "
+                    + calls
+                    + (
+                        " - in that order, general conventions before category specific"
+                        " ones - and follow them"
+                        if len(missing) > 1
+                        else ", follow it"
+                    )
+                    + ", then make this edit again"
+                )
+
+            managed = sorted(MANAGED_SLOTS.intersection(slots))
+            if managed:
+                # A prompt rule was not enough - the model writes these anyway, and a
+                # replaced header/footer breaks the entity rendering on every instance.
+                raise ToolRefusal(
+                    f"{', '.join(repr(s) for s in managed)} cannot be written: header and "
+                    "footer always carry the default invokes and nothing else. Content for "
+                    "this page goes in 'main'; content that should appear on every "
+                    "instance of a category goes in 'header_template' (above) or "
+                    "'footer_template' (below); structured data goes in 'jsondata'."
+                )
             osw_id = osw_id_of(title)
             if osw_id is not None and osw_id not in session.minted_ids:
+                # A near-miss of an id this session already handled is a transcription
+                # slip, not a new entity: creating it would leave two half-written pages
+                # and the user looking at whichever one the model mentions last.
+                known = set(session.minted_ids) | {
+                    i
+                    for i in (osw_id_of(t) for t in session.written_pages)
+                    if i is not None
+                }
+                near = nearest_known_id(osw_id, known)
+                if near is not None:
+                    raise ToolRefusal(
+                        f"'{title}' differs by a few characters from OSW{near.upper()}, "
+                        "which this session already worked on. Use that title exactly as "
+                        "written, or call 'new_osw_id' if you really mean a new entity."
+                    )
                 # Either this is a real page being edited, or the model made the
                 # id up. Only the wiki can tell us which.
                 if not await session._page_exists(title):
-                    raise ClientToolError(
+                    raise ToolRefusal(
                         f"'{title}' does not exist and its OSW-ID was not issued "
                         "here. Do not invent OSW-IDs - call 'new_osw_id' and use "
                         "exactly what it returns as the title of the new entity."
@@ -659,7 +1024,13 @@ class ChatSession:
                 # The uuid in the data and the id in the title are the same
                 # thing; a mismatch leaves the entity unfindable.
                 slots["jsondata"]["uuid"] = uuid_from_osw_id(osw_id)
-            return await session.call_client_side_tool("edit_page", [title, slots, summary])
+            result = await session.call_client_side_tool(
+                "edit_page", [title, slots, summary]
+            )
+            # Only on success, and merged rather than replaced: edit_page changes just the
+            # slots it is given, so a later read must still see the ones written earlier.
+            session.written_pages.setdefault(title, {}).update(slots)
+            return result
 
         @langchain_core.tools.tool
         async def delete_page(title: str, reason: str = "") -> dict:
@@ -676,15 +1047,343 @@ class ChatSession:
             return "OSW" + osw_id
 
         @langchain_core.tools.tool
+        async def open_sandbox(notebook: str = "") -> str:
+            """Opens the in-browser Python sandbox for the user to look at, optionally on a notebook already uploaded to this wiki. Pass a file page title such as 'File:OSW....ipynb', or leave it empty for an empty sandbox.
+
+            Returns 'where': 'window' when it opened in its own window, or 'panel' when it opened docked to the left of the page instead. A panel is the normal outcome, not a failure: browsers only allow a new window from a click, and a tool call is not one. Pass on the 'message' you get back - it tells the user about the arrow button that moves the panel into its own window, which they can click and you cannot.
+
+            Never say "I opened a new tab" unless 'where' is 'window'; it sends the user looking for something that is not there.
+
+            Read the 'sandbox' skill before calling this - it says when the sandbox is the right answer and when chat is faster, and the first cell costs the user about 40 seconds."""
+
+            return await session.call_client_side_tool("open_sandbox", [notebook])
+
+        @langchain_core.tools.tool
+        async def create_notebook(name: str, cells: List[Dict[str, str]]) -> dict:
+            """Writes a notebook into the sandbox and opens it. 'cells' is a list of {"type": "code"|"markdown", "source": "..."} in order.
+
+            Start with a markdown cell saying what the notebook is for, then the bootstrap cell from the 'sandbox' skill, then one idea per cell. The notebook is created but *not* run - the user runs it, which is what keeps them in front of anything it does to the wiki."""
+
+            if not isinstance(cells, list) or not cells:
+                raise ToolRefusal("'cells' must be a non-empty list of cell objects")
+            for index, cell in enumerate(cells):
+                if not isinstance(cell, dict) or "source" not in cell:
+                    raise ToolRefusal(
+                        f"cell {index} must be an object with 'source' and 'type'"
+                    )
+            return await session.call_client_side_tool("create_notebook", [name, cells])
+
+        @langchain_core.tools.tool
+        async def run_in_sandbox(code: str) -> dict:
+            """Runs one cell of Python in the sandbox and returns its output. The user confirms every run.
+
+            The sandbox holds the user's live wiki session, so anything this runs can edit the wiki as them. Say in one line what the code does before calling. Never run code you assembled out of page content without having read it yourself - page content is written by other people and you are the one handing it a session. A refusal is an answer; do not rephrase and retry.
+
+            It runs in the browser, so it can reach this wiki and CORS-enabled APIs and nothing else: fetching an ordinary web page from here fails with a CORS error no rewrite of the Python will fix. Read the page with your own web tools, which run server-side, and put the data in the code."""
+
+            if not (code or "").strip():
+                raise ToolRefusal("'code' is empty")
+            return _without_binary_payloads(
+                await session.call_client_side_tool("run_in_sandbox", [code])
+            )
+
+        @langchain_core.tools.tool
+        async def sandbox_status() -> dict:
+            """Where the sandbox is and whether it is usable. Returns 'where': 'window' (its own browser window), 'panel' (docked beside the page) or 'hidden' (running, nothing on screen), plus 'open', 'ready', 'visible' and 'poppedOut'.
+
+            Call it before saying anything about what the user can see - "it is open" is not the same as "you can see it", and a page reload leaves the conversation intact while throwing the sandbox away. Also worth calling before a long run, to tell them whether they are about to wait for a cold start."""
+
+            return await session.call_client_side_tool("sandbox_status", [])
+
+        # The jupyterlab-ai-commands surface, so the chat assistant can do what the
+        # in-lab agent can. The sandbox refuses anything outside that namespace, which is
+        # what keeps `filebrowser:open-url` - and the `?fromURL=` allowlist it would walk
+        # around - out of reach.
+        async def lab(command: str, **kwargs) -> dict:
+            # Every lab command funnels through here, so the binary strip happens once.
+            return _without_binary_payloads(
+                await session.call_client_side_tool(
+                    "sandbox_command", [f"jupyterlab-ai-commands:{command}", kwargs]
+                )
+            )
+
+        @langchain_core.tools.tool
+        async def kernel_start() -> dict:
+            """Starts a Python kernel in the sandbox and returns its 'kernelId'. Use the id for 'kernel_execute'. A kernel keeps its variables between calls, so start one and reuse it rather than starting a fresh one per snippet.
+
+            Call 'kernel_list' first and reuse what is there. Each kernel is a full Python runtime in the user's browser, and they are not cleaned up on their own - five accumulated in one session here. If you do start one for a one-off task, shut it down with 'kernel_shutdown' when you are finished with it."""
+
+            return await lab("start-kernel")
+
+        @langchain_core.tools.tool
+        async def kernel_list() -> dict:
+            """Lists kernels already running in the sandbox, with their ids. Reuse a running kernel rather than starting another - a new one has none of the imports or variables of the old."""
+
+            return await lab("list-kernels")
+
+        @langchain_core.tools.tool
+        async def kernel_execute(kernel_id: str, code: str) -> dict:
+            """Runs Python in a kernel and returns its actual output. Nothing is written into a notebook, so this is the right tool for working something out - a lookup, a calculation, a check - where the user does not need the code afterwards.
+
+            Returns 'outputs' with what the code printed or evaluated, plus 'errorName' and 'traceback' when it raised. Use 'notebook_add_cell' and 'notebook_run_cell' instead when the user should keep the code.
+
+            This is the same kernel the notebook runs in - one namespace, one execution counter - so code here sees what notebook cells defined, and the other way round. A NameError for something defined earlier means the kernel was restarted, which a page reload does; re-run the setup cells rather than concluding the two do not share state.
+
+            The kernel is in the browser: it can reach this wiki and CORS-enabled APIs, not the open web. Fetch pages with your own web tools and pass the data in."""
+
+            if not (code or "").strip():
+                raise ToolRefusal("'code' is empty")
+            if not (kernel_id or "").strip():
+                raise ToolRefusal(
+                    "'kernel_id' is required - call 'kernel_start' or 'kernel_list' first"
+                )
+            return await lab("execute-in-kernel", kernelId=kernel_id, code=code)
+
+        @langchain_core.tools.tool
+        async def kernel_shutdown(kernel_id: str) -> dict:
+            """Shuts a kernel down and frees its memory. The user loses every variable in it, so only when they are finished."""
+
+            return await lab("shutdown-kernel", kernelId=kernel_id)
+
+        @langchain_core.tools.tool
+        async def notebook_info(notebook_path: str = "") -> dict:
+            """What notebook is open in the sandbox: its path, its cells and which cell is active. Call it before adding or running a cell so you act on the notebook you mean."""
+
+            return await lab("get-notebook-info", notebookPath=notebook_path)
+
+        @langchain_core.tools.tool
+        async def notebook_add_cell(
+            notebook_path: str, content: str, cell_type: str = "code"
+        ) -> dict:
+            """Appends one cell to a notebook. 'cell_type' is 'code' or 'markdown'. The cell is added but not run - 'notebook_run_cell' runs it."""
+
+            if cell_type not in ("code", "markdown"):
+                raise ToolRefusal("'cell_type' must be 'code' or 'markdown'")
+            return await lab(
+                "add-cell",
+                notebookPath=notebook_path,
+                content=content,
+                cellType=cell_type,
+            )
+
+        @langchain_core.tools.tool
+        async def notebook_run_cell(notebook_path: str, cell_id: str) -> dict:
+            """Runs one cell of a notebook and returns its output, so the user keeps the code and you see the result. Get 'cell_id' from 'notebook_info' - running the wrong cell is worse than running none."""
+
+            return await lab("run-cell", notebookPath=notebook_path, cellId=cell_id)
+
+        @langchain_core.tools.tool
+        async def notebook_delete_cell(notebook_path: str, cell_id: str) -> dict:
+            """Deletes one cell from a notebook. Ask the user before removing anything they wrote."""
+
+            return await lab("delete-cell", notebookPath=notebook_path, cellId=cell_id)
+
+        @langchain_core.tools.tool
+        async def save_notebook_to_wiki(
+            label: str = "", comment: str = ""
+        ) -> dict:
+            """Uploads the sandbox's open notebook to the wiki as a WikiFile, so it outlives the session. Returns its 'title', e.g. 'File:OSW....ipynb'.
+
+            'label' is what a reader sees - "EMMC events", not a filename. The page itself is named by OSW-ID, because that is how this wiki identifies an entity; do not pass a title or try to choose one.
+
+            The sandbox's own storage is the browser's and does not survive clearing site data, so offer this whenever the user has code worth keeping. Afterwards tell them the notebook can be reopened at any time from that file page, or by passing the title to 'open_sandbox' - they do not have to ask you to rebuild it.
+
+            The user confirms the upload."""
+
+            result = await session.call_client_side_tool(
+                "save_notebook_to_wiki", [label, comment]
+            )
+            # A dict saying ok:false is something the model reads past and then reports
+            # as done, inventing a plausible File: title. This claim is durable - the
+            # user will go looking for the page - so a failure has to arrive as an error,
+            # not as a field.
+            title = (result or {}).get("title")
+            if not title:
+                raise ToolRefusal(
+                    "the notebook was not saved: "
+                    + str(
+                        (result or {}).get("message")
+                        or (result or {}).get("error")
+                        or "the sandbox did not return a file title"
+                    )
+                    + ". Do not tell the user it was uploaded, and do not invent a File: "
+                    "title - check 'sandbox_status' and reopen the sandbox if it is gone."
+                )
+            return result
+
+        @langchain_core.tools.tool
+        async def notebook_save(notebook_path: str) -> dict:
+            """Saves the notebook to the sandbox's own storage. That storage is the browser's, so it does not survive clearing site data - offer to upload the notebook to the wiki for anything worth keeping."""
+
+            return await lab("save-notebook", notebookPath=notebook_path)
+
+        # Moving files between the sandbox and the wiki, both ways.
+        #
+        # Not left to ad-hoc kernel code. Code can do it - osw-python is right there - but
+        # it reaches api.php directly, so none of the rules this extension enforces apply:
+        # the page gets whatever name the code chose and no jsondata, which is exactly how
+        # `File:Emmc_events.ipynb` happened. It also costs the user a confirmation prompt
+        # on Python they did not want to read.
+        @langchain_core.tools.tool
+        async def push_file_to_osw(
+            path: str, label: str = "", comment: str = ""
+        ) -> dict:
+            """Uploads a file from the sandbox to this wiki as a WikiFile, so it outlives the browser. Returns its 'title', e.g. 'File:OSW....csv'. The user confirms first.
+
+            'path' is the file inside the sandbox ('results.csv', 'figures/plot.png'); 'label' is what a reader should see. The page is named by OSW-ID - never pick the page name yourself, and never write code that uploads instead, which would skip the naming and the entity data that make the file findable.
+
+            Use 'save_notebook_to_wiki' for the open notebook; it saves it first."""
+
+            if not (path or "").strip():
+                raise ToolRefusal("'path' is empty - name the file in the sandbox")
+            result = await session.call_client_side_tool(
+                "push_file_to_osw", [path, label, comment]
+            )
+            title = (result or {}).get("title")
+            if not title:
+                raise ToolRefusal(
+                    "the file was not uploaded: "
+                    + str((result or {}).get("message") or (result or {}).get("error") or result)
+                    + ". Do not tell the user it was uploaded, and do not invent a "
+                    "File: title."
+                )
+            return result
+
+        @langchain_core.tools.tool
+        async def pull_file_from_osw(title: str, path: str = "") -> dict:
+            """Copies a file from this wiki into the sandbox so code can read it. 'title' is a 'File:...' page; 'path' is where to put it, defaulting to the wiki's own file name.
+
+            Use it instead of writing Python that downloads the file: this runs as the user, checks the page is really an uploaded file on this wiki, and handles binary content without routing it through the conversation."""
+
+            if not (title or "").strip():
+                raise ToolRefusal("'title' is empty - name a 'File:...' page")
+            result = await session.call_client_side_tool(
+                "pull_file_from_osw", [title, path]
+            )
+            if not (result or {}).get("ok"):
+                raise ToolRefusal(
+                    "the file was not copied into the sandbox: "
+                    + str((result or {}).get("message") or (result or {}).get("error") or result)
+                )
+            return result
+
+        # The whole lab surface, without a wrapper per command.
+        #
+        # Hand-written wrappers drift: the deployed build offers 23 commands and chat
+        # could reach 11, because nobody added the rest. These two ask the running lab
+        # what it can do, so a command added upstream is available here with no change -
+        # and the schemas come from the same `describedBy` the in-lab agent reads, so
+        # both agents describe the sandbox the same way.
+        @langchain_core.tools.tool
+        async def discover_commands() -> dict:
+            """Lists everything the sandbox can be asked to do, with the arguments each one takes. Returns {'commands': [{'command', 'label', 'caption', 'args'}]}, where 'args' is a JSON schema.
+
+            Call it before 'execute_command' rather than guessing a command name, and whenever a task needs something the named tools do not cover - files, cells, kernels. The named tools ('notebook_run_cell', 'kernel_execute' and the rest) are shortcuts for the common ones; this is the full set the installed sandbox provides."""
+
+            return await session.call_client_side_tool("discover_commands", [])
+
+        @langchain_core.tools.tool
+        async def execute_command(command: str, arguments: dict = None) -> dict:
+            """Runs one sandbox command. 'command' is an id from 'discover_commands' - pass it exactly as listed, including the 'jupyterlab-ai-commands:' prefix - and 'arguments' matches the 'args' schema that command reported.
+
+            Anything that runs code or deletes something asks the user first, so a refusal here is their answer and not a fault to work around. Nothing outside the sandbox's own command namespace can be called."""
+
+            # Not named `args`: langchain mangles a tool parameter called `args` into
+            # `v__args` when it builds the schema, and the call then arrives with a
+            # keyword the function does not take. It fails only through the agent, so a
+            # direct call to the coroutine looks fine.
+            return await session.call_client_side_tool(
+                "sandbox_command", [command, arguments or {}]
+            )
+
+        @langchain_core.tools.tool
         async def load_skill(name: str) -> str:
-            """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not."""
+            """Returns detailed instructions for a task, which you must follow. Call this *before* writing any wiki page and before generating any component or script - not after. It carries the conventions this wiki actually enforces (slots, schemas, which APIs to call), and code written without it is reliably wrong in ways that are invisible until a page renders blank. Reading it is cheap; redoing the work is not.
+
+            Skills that ship with the assistant are listed in the system prompt. This wiki may also hold its own, written by its editors - use 'discover_skills' to find those, then load them by name here too."""
+
+            if name in session.loaded_skills:
+                # Returning the body again would spend the whole skill a second time for
+                # nothing. The instructions are already upstream in this conversation.
+                return (
+                    f"'{name}' is already loaded earlier in this session - its "
+                    "instructions are above and still apply. Follow them; do not ask for "
+                    "it again."
+                )
 
             skill = session.skills.get(name)
-            if skill is None:
+            if skill is not None:
+                session.loaded_skills.add(name)
+                return skill.body
+
+            # Not a bundled skill - try the wiki. Done here rather than by loading every
+            # wiki skill up front because the browser bridge is not live when the session
+            # is constructed, which is when the bundled ones are read and the system
+            # prompt is built.
+            body = await session.load_wiki_skill(name)
+            if body is None:
                 available = ", ".join(session.skills) or "none"
-                raise ClientToolError(f"no skill named {name!r}. Available: {available}")
+                raise ToolRefusal(
+                    f"no skill named {name!r}. Bundled: {available}. "
+                    "Call 'discover_skills' for the ones this wiki holds."
+                )
             session.loaded_skills.add(name)
-            return skill.body
+            return body
+
+        @langchain_core.tools.tool
+        async def discover_skills(query: str = "") -> List[Dict[str, str]]:
+            """Lists every skill available here: the ones this wiki holds, written by its editors, and the ones that ship with the assistant. Returns a list of {name, description, title}; pass a name to 'load_skill' to read one. A 'title' means the skill lives on the wiki.
+
+            Use it when a task looks wiki-specific and nothing in the system prompt covers it: local conventions, a house style for a category, a procedure this site follows. 'query' narrows by substring over names and descriptions; leave it empty to see everything."""
+
+            found = await session.list_wiki_skills(query)
+
+            # Merged by name, not replaced wholesale. A wiki skill supersedes the shipped
+            # copy it was migrated from - the wiki is the source of truth for anything the
+            # wiki describes - but a shipped skill with no counterpart has to survive, or
+            # it disappears the moment the wiki gains its first skill of any kind.
+            #
+            # That is not hypothetical: 'sandbox' describes a backend capability rather
+            # than a wiki convention, so it was deliberately never migrated. Under
+            # all-or-nothing it vanished from this listing, and the assistant answered
+            # "I only have access to two skills" while holding three.
+            from_wiki = {s["name"] for s in found}
+            needle = (query or "").strip().lower()
+            shipped = [
+                {"name": s.name, "description": s.description, "title": ""}
+                for s in session.skills.values()
+                if s.name not in from_wiki
+                and (
+                    not needle
+                    or needle in s.name.lower()
+                    or needle in s.description.lower()
+                )
+            ]
+            return found + shipped
+
+        @langchain_core.tools.tool
+        async def save_skill(
+            name: str, description: str, instructions: str, title: str = ""
+        ) -> dict:
+            """Writes a skill to the wiki, so it is available to this assistant and to the notebook agent from now on. It is saved as an ordinary page of the wiki's skill category, tagged with the AI Skill keyword - the keyword is what makes a page a skill, not the category. Opens a confirmation first - it is a wiki edit, made in the user's name.
+
+            'name' is a slug the skill is called by, lower case with hyphens, e.g. 'tensile-test-reporting'. 'description' is the single line every assistant sees for this skill on every turn, so say *when* to reach for it, not what it contains. 'instructions' is the body, in markdown. Pass 'title' to update an existing skill page; leave it empty to create one.
+
+            Write a skill when the user has taught you something durable about this wiki - a convention, a procedure, a shape of query that keeps coming up. Do not write one to remember a single answer."""
+
+            if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name or ""):
+                raise ToolRefusal(
+                    f"{name!r} is not a slug - use lower case words joined by hyphens, "
+                    "e.g. 'tensile-test-reporting'"
+                )
+            if not description.strip() or not instructions.strip():
+                raise ToolRefusal("description and instructions are both required")
+            return await session.save_wiki_skill(
+                name=name,
+                description=description.strip(),
+                instructions=instructions.strip(),
+                title=title.strip() or None,
+            )
 
         tools = [
             multiply,
@@ -705,12 +1404,30 @@ class ChatSession:
             delete_page,
             upload_file,
             new_osw_id,
+            discover_skills,
+            save_skill,
         ]
-        if session.skills:
-            tools.append(load_skill)
+        # One switch for the whole sandbox, not per tool: an assistant that can write a
+        # notebook but not open it, or open one but not run it, is worse than one with no
+        # sandbox at all. The wiki signs the action list into the token, so this cannot be
+        # turned on from here.
+        if "code-sandbox" in session.actions:
+            tools += [
+                open_sandbox, create_notebook, run_in_sandbox, sandbox_status,
+                kernel_start, kernel_list, kernel_execute, kernel_shutdown,
+                notebook_info, notebook_add_cell, notebook_run_cell,
+                notebook_delete_cell, notebook_save, save_notebook_to_wiki,
+                discover_commands, execute_command,
+                push_file_to_osw, pull_file_from_osw,
+            ]
+        # load_skill is registered whenever *any* source of skills exists. The wiki's own
+        # are discovered at call time, so the bundled ones being empty does not mean there
+        # is nothing to load.
+        tools.append(load_skill)
         for tool in tools:
             tool.handle_tool_error = _tool_error_observation
             tool.handle_validation_error = _tool_input_observation
+            _bounded(tool)
         return tools
 
     async def _resolve_references(self, data, schema):
@@ -750,6 +1467,276 @@ class ChatSession:
                     f"{path} = {text!r} (needs {prefill.describe_constraint(constraint)})"
                 )
         return prefill.prune_empty(data), unresolved
+
+    async def _wiki_skill_pages(self, refresh=False):
+        """Every skill page on this wiki, as {name: {...}}.
+
+        Read through the browser, not from here: this process holds no wiki credential by
+        design, and on a wiki that denies anonymous reads - the dev wiki does - a
+        server-side fetch would see nothing. Going through the user's session also means
+        a skill they may not read is one they do not get told about.
+
+        Cached per session. The bridge is only live once the widget is mounted, which is
+        why this cannot happen in __init__ where the bundled skills are read.
+        """
+        if self._wiki_skills is not None and not refresh:
+            return self._wiki_skills
+
+        try:
+            listing = await self.call_client_side_tool(
+                "smw_ask_query", [f"{SKILL_DISCOVERY_QUERY}|limit=500"]
+            )
+        except ClientToolError:
+            # No skills is a perfectly good answer; a failed lookup must not end the turn.
+            self._wiki_skills = {}
+            return self._wiki_skills
+
+        titles = list(((listing or {}).get("query", {}).get("results") or {}).keys())
+        skills = {}
+        # Batched: the browser does one api.php round trip per call, and a wiki with
+        # thirty skills should not cost thirty of them.
+        for start in range(0, len(titles), 50):
+            batch = titles[start : start + 50]
+            try:
+                data = await self.call_client_side_tool(
+                    "get_page_content", [batch, False]
+                )
+            except ClientToolError:
+                continue
+            pages = ((data or {}).get("query", {}) or {}).get("pages") or {}
+            for page in pages.values():
+                slots = (page.get("revisions") or [{}])[0].get("slots") or {}
+                raw = (slots.get("jsondata") or {}).get("*")
+                if not raw:
+                    continue
+                try:
+                    jsondata = json.loads(raw)
+                except ValueError:
+                    continue
+                applies = jsondata.get("applies_to") or []
+                if applies and "osw-chatbot" not in applies:
+                    continue
+                name = jsondata.get("skill_name") or jsondata.get("name")
+                if not name:
+                    continue
+                skills[name] = {
+                    "name": name,
+                    "title": page.get("title", ""),
+                    "description": _first_text(jsondata.get("description"))
+                    or _first_text(jsondata.get("label")),
+                    "body": (slots.get("main") or {}).get("*") or "",
+                    # Target concepts this skill applies to - Categories, mostly. Read
+                    # straight off the page rather than queried: none of the skill
+                    # category's fields are exported as SMW properties, so there is
+                    # nothing to ask for, and the jsondata is already parsed here.
+                    "related_to": [
+                        r for r in (jsondata.get("related_to") or []) if isinstance(r, str)
+                    ],
+                    # Prerequisite chain. Real content already uses it: "OSW Python
+                    # Package" requires "JSON-SCHEMA Tutorial".
+                    "required_predecessors": [
+                        r
+                        for r in (jsondata.get("required_predecessor") or [])
+                        if isinstance(r, str)
+                    ],
+                }
+        self._wiki_skills = skills
+        return skills
+
+    async def _superclasses(self, category):
+        """`category` and everything it is a subclass of, nearest first.
+
+        Cached per session: a gate that resolved this on every write would cost a round
+        trip per edit, and the hierarchy does not move during a conversation.
+        """
+        if category in self._superclass_cache:
+            return self._superclass_cache[category]
+
+        chain, seen, current = [], set(), category
+        while current and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            # Someone already walked from here upwards. Reuse that tail rather than
+            # re-fetching it: hierarchies converge, so the second category in a session
+            # usually meets the first one's chain within a level or two.
+            known = self._superclass_cache.get(current)
+            if known is not None and len(chain) > 1:
+                chain = chain[:-1] + known
+                break
+            try:
+                data = await self.call_client_side_tool(
+                    "get_page_content", [[current], False]
+                )
+            except ClientToolError:
+                break
+            pages = ((data or {}).get("query", {}) or {}).get("pages") or {}
+            parent = None
+            for page in pages.values():
+                slots = (page.get("revisions") or [{}])[0].get("slots") or {}
+                raw = (slots.get("jsondata") or {}).get("*")
+                if not raw:
+                    continue
+                try:
+                    parents = json.loads(raw).get("subclass_of") or []
+                except ValueError:
+                    continue
+                parent = next((p for p in parents if isinstance(p, str)), None)
+            current = parent
+        # Cache every suffix, not only the category asked for. Walking Tutorial also
+        # answers Article, CreativeWork, Item and Entity for free, which is most of
+        # the cost of the next lookup.
+        for i, step in enumerate(chain):
+            self._superclass_cache.setdefault(step, chain[i:])
+        return chain
+
+    async def skills_for_category(self, category):
+        """Skill names that must be loaded before instantiating `category`.
+
+        A skill on a supercategory covers its subcategories - a convention for "Device"
+        applies to every kind of device - so the whole chain is considered. Prerequisites
+        are pulled in transitively.
+
+        Ordered general first, category specific last: the conventions for writing any
+        entity are what the specific skill assumes you already know, so reading them the
+        other way round means reading the exception before the rule. `_superclasses`
+        returns nearest first, so the walk goes the other way.
+        """
+        skills = await self._wiki_skill_pages()
+        if not any(s.get("related_to") for s in skills.values()):
+            # Nothing is gated on this wiki, so the chain walk - five sequential round
+            # trips through the browser - would cost that to learn nothing.
+            return []
+
+        by_title = {s["title"]: s for s in skills.values() if s.get("title")}
+        chain = await self._superclasses(category)
+
+        matched, seen = [], set()
+
+        def pull(skill):
+            # Depth first through required_predecessor, guarding against a cycle: the
+            # property is authored by hand and nothing on the wiki prevents one.
+            if skill["name"] in seen:
+                return
+            seen.add(skill["name"])
+            for predecessor in skill.get("required_predecessors") or []:
+                earlier = by_title.get(predecessor)
+                if earlier is None:
+                    # A prerequisite only counts if it is a skill itself: the gate's
+                    # remedy is load_skill(), which has nothing to load otherwise.
+                    # Said out loud, because the page looks gated either way - the
+                    # author sees `required_predecessor` set and has no way to tell it
+                    # is being ignored. The fix is on the wiki: give that page the AI
+                    # Skill keyword.
+                    print(
+                        f"osw-chatbot: {skill['title']} requires {predecessor} first, "
+                        "but that page is not a skill on this wiki - the prerequisite "
+                        "is not enforced. Add the AI Skill keyword to it.",
+                        flush=True,
+                    )
+                    continue
+                pull(earlier)
+            matched.append(skill["name"])
+
+        for target in reversed(chain):
+            for skill in skills.values():
+                if target in (skill.get("related_to") or []):
+                    pull(skill)
+        return matched
+
+    async def list_wiki_skills(self, query=""):
+        """Name, description and title of each wiki skill, optionally filtered."""
+        skills = await self._wiki_skill_pages()
+        needle = (query or "").strip().lower()
+        return [
+            {"name": s["name"], "description": s["description"], "title": s["title"]}
+            for s in skills.values()
+            if not needle
+            or needle in s["name"].lower()
+            or needle in s["description"].lower()
+        ]
+
+    async def load_wiki_skill(self, name):
+        """The body of a wiki skill, or None if this wiki has no such skill."""
+        skills = await self._wiki_skill_pages()
+        skill = skills.get(name)
+        return skill["body"] if skill else None
+
+    async def save_wiki_skill(self, name, description, instructions, title=None):
+        """Create or update a skill page, through the usual write path.
+
+        Routed through `edit_page` rather than a new browser tool so it inherits
+        everything that already guards a write: the confirmation dialog, the action gate,
+        and the fact that it happens in the user's browser under their rights.
+        """
+        existing = (await self._wiki_skill_pages()).get(name)
+        if title is None:
+            title = existing["title"] if existing else f"Item:OSW{uuid.uuid4().hex}"
+        if title.startswith("Item:OSW"):
+            self.minted_ids.add(title.split("OSW", 1)[1].lower())
+
+        if not await self._page_exists(SKILL_CATEGORY):
+            # Writing the skill anyway would type it against a category this wiki does not
+            # have: the page renders, nothing finds it, and nobody notices until someone
+            # asks why the assistant has no skills.
+            raise ToolRefusal(
+                f"Category for skills not installed: {SKILL_CATEGORY} does not exist on "
+                "this wiki. Install the opensemantic base vocabulary, or point "
+                "SKILL_CATEGORY at the category this wiki uses."
+            )
+
+        jsondata = {
+            "type": [SKILL_CATEGORY],
+            "skill_name": name,
+            "label": [{"text": name, "lang": "en"}],
+            "description": [{"text": description, "lang": "en"}],
+        }
+        osw_id = osw_id_of(title)
+        if osw_id is not None:
+            jsondata["uuid"] = uuid_from_osw_id(osw_id)
+
+        # The defaults go to the browser rather than being merged here: mwjson.util
+        # .mergeDeep is the wiki's own merge - arrays concatenated and uniqued - and
+        # reimplementing it in python would be a second copy to keep in step.
+        result = await self.call_client_side_tool(
+            "edit_page",
+            [
+                title,
+                {"jsondata": jsondata, "main": instructions},
+                f"Skill: {name}",
+                await self._usable_skill_defaults(),
+            ],
+        )
+        # The cache would otherwise hide the skill that was just written for the rest of
+        # the conversation, which is exactly when it is most likely to be used.
+        await self._wiki_skill_pages(refresh=True)
+        return {"ok": True, "title": title, "name": name, "result": result}
+
+    async def _usable_skill_defaults(self):
+        """SKILL_DEFAULT_DATA with references this wiki does not have removed.
+
+        The defaults name pages - the AI Skill keyword, the developers article - that exist
+        on an OSW wiki with the standard vocabulary installed and nowhere else. Writing
+        them regardless would leave dangling references that queries silently skip, so each
+        is probed once and dropped if absent. Cached: this runs on every skill write.
+        """
+        if self._skill_defaults is not None:
+            return self._skill_defaults
+
+        usable = {}
+        for key, value in SKILL_DEFAULT_DATA.items():
+            if isinstance(value, list):
+                kept = []
+                for ref in value:
+                    if not isinstance(ref, str) or osw_id_of(ref) is None:
+                        kept.append(ref)  # not a page reference, nothing to check
+                    elif await self._page_exists(ref):
+                        kept.append(ref)
+                if kept:
+                    usable[key] = kept
+            else:
+                usable[key] = value
+        self._skill_defaults = usable
+        return usable
 
     async def _page_exists(self, title):
         """Does this wiki page exist? Used before trusting a model-chosen id."""
@@ -810,12 +1797,40 @@ class ChatSession:
                     {"type": "image_url", "image_url": {"url": att["preview"]}}
                 )
             elif att.get("text"):
-                notes.append(f"Content of {name}:\n{att['text']}")
+                # ATTACHMENT_MAX_BYTES allows 20 MB, and this went into the prompt
+                # whole - the other half of the same hole the tool results had.
+                notes.append(f"Content of {name}:\n{_truncate(att['text'])}")
         return [{"type": "text", "text": "\n".join([prompt, *notes])}, *blocks]
+
+    def _fit_prompt(self, content) -> bool:
+        """Drop oldest turns until the prompt plausibly fits. True if anything went.
+
+        Nothing counted the whole prompt before - only one observation at a time
+        (MAX_TOOL_RESULT_CHARS), which does not bound their sum. Over the model's limit the
+        request is refused outright rather than degrading, so a cheap estimate is worth
+        spending to stay under it.
+
+        The estimate is characters/4, not a real tokenizer: tokenizing the whole history
+        every turn costs more than the imprecision does, and the budget is set well below
+        the hard limit so the slack absorbs the error.
+        """
+        budget = MAX_PROMPT_CHARS
+        fixed = len(SYSTEM_TEXT) + len(as_text(content))
+        dropped = False
+        while self.chat_history:
+            used = fixed + sum(len(as_text(m.content)) for m in self.chat_history)
+            if used <= budget:
+                break
+            # Two at a time: a turn is a human message and its reply, and leaving half
+            # of one behind reads as the model ignoring what was just said.
+            self.chat_history = self.chat_history[2:]
+            dropped = True
+        return dropped
 
     async def invoke(self, prompt, attachments=None, callbacks=None):
         self.chat_history = trim_history(self.chat_history)
         content = self._content(prompt, attachments)
+        trimmed = self._fit_prompt(content)
         res = await self.agent_executor.ainvoke(
             {
                 "input": [HumanMessage(content=content)],
@@ -826,6 +1841,14 @@ class ChatSession:
         # Anthropic returns a list of content blocks where OpenAI returns a
         # string; the chat UI and the stored history both want plain text.
         res["output"] = as_text(res["output"])
+        if trimmed:
+            # Say it rather than quietly forgetting: the user is the only one who can
+            # tell whether what was dropped mattered.
+            res["output"] += (
+                "\n\n*(This conversation got long, so the earliest messages were dropped "
+                "to stay within the model's context. Repeat anything from the start that "
+                "still matters.)*"
+            )
         self.chat_history.extend(
             [
                 HumanMessage(content=prompt),
